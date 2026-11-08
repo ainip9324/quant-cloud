@@ -1,0 +1,68 @@
+server:
+  port: ${AI_SERVER_PORT:8083}
+
+spring:
+  application:
+    name: quant-ai-service
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3307}/${MYSQL_DATABASE:quant_cloud}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  ai:
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      # Bootstrap placeholder only satisfies Spring AI bean construction. ModelClient still reads
+      # DEEPSEEK_API_KEY directly and refuses every DeepSeek call when the real key is absent.
+      api-key: ${DEEPSEEK_API_KEY:stage-a-no-key-placeholder}
+      chat:
+        completions-path: /v1/chat/completions
+        options:
+          model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+          # OpenAI-compatible extra body：必须在阶段 A Mock 契约测试中验证实际发出。
+          extra-body:
+            thinking:
+              type: disabled
+
+ai:
+  model-provider: ${AI_MODEL_PROVIDER:fake}
+  model-name: ${DEEPSEEK_MODEL:deepseek-v4-flash}
+  model-timeout: ${AI_MODEL_TIMEOUT:30s}
+  knowledge:
+    enabled: ${AI_KNOWLEDGE_ENABLED:false}
+    retrieval-port: ${AI_KNOWLEDGE_RETRIEVAL_PORT:0}
+    public-quote-enabled: ${AI_KNOWLEDGE_PUBLIC_QUOTE_ENABLED:false}
+    research-workflow-enabled: ${AI_KNOWLEDGE_RESEARCH_WORKFLOW_ENABLED:false}
+    thinking-enabled: ${AI_KNOWLEDGE_THINKING_ENABLED:true}
+    redis-host: ${AI_KNOWLEDGE_REDIS_HOST:localhost}
+    redis-port: ${AI_KNOWLEDGE_REDIS_PORT:6379}
+    secure-cookie: ${AI_KNOWLEDGE_SECURE_COOKIE:false}
+    visitor-daily-limit: ${AI_KNOWLEDGE_VISITOR_DAILY_LIMIT:5}
+    visitor-pool-daily-limit: ${AI_KNOWLEDGE_VISITOR_POOL_DAILY_LIMIT:30}
+    account-daily-limit: ${AI_KNOWLEDGE_ACCOUNT_DAILY_LIMIT:20}
+    total-daily-limit: ${AI_KNOWLEDGE_TOTAL_DAILY_LIMIT:60}
+  core-gateway:
+    base-url: ${CORE_GATEWAY_BASE_URL:http://quant-gateway:8080}
+    timeout: ${AI_CORE_TIMEOUT:5s}
+  report:
+    total-timeout: ${AI_REPORT_TOTAL_TIMEOUT:90s}
+    stale-grace: ${AI_REPORT_STALE_GRACE:15s}
+    tool-call-budget: ${AI_REPORT_TOOL_CALL_BUDGET:6}
+    response-byte-limit: ${AI_REPORT_RESPONSE_BYTE_LIMIT:49152}
+    persisted-report-byte-limit: ${AI_REPORT_PERSISTED_REPORT_BYTE_LIMIT:262144}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  level:
+    com.quant.ai: info
+
+auth:
+  jwt-secret: ${JWT_SECRET}

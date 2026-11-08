@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: quant-data-service
+  cloud:
+    nacos:
+      # 配置中心：启动时从 Nacos 拉取 quant-data-service.yaml
+      # 用于动态/集中管理配置（如 Bitget 代理开关、限流阈值等）
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        file-extension: yaml

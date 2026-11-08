@@ -1,0 +1,61 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: quant-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+    gateway:
+      # 路由规则
+      routes:
+        - id: market-workspace-stream
+          uri: lb://quant-core-service
+          predicates:
+            - Path=/api/core/market-workspace/stream
+            - Method=GET
+          metadata:
+            response-timeout: -1
+        - id: data-service
+          uri: lb://quant-data-service
+          predicates:
+            - Path=/api/data/**
+        # Week 2 会启用
+        - id: core-service
+          uri: lb://quant-core-service
+          predicates:
+            - Path=/api/core/**
+        - id: ai-service
+          # The isolated Stage A service intentionally does not join Nacos.
+          uri: http://ai-service:8083
+          predicates:
+            - Path=/api/ai/**
+      # CORS 跨域配置
+      # allowedOriginPatterns 支持 allowCredentials: true（allowedOrigins:"*" 不允许）
+      # 同时覆盖开发模式(5173)和 Docker 模式(8088)
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: true
+
+# 健康检查（供 Docker healthcheck 使用）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    org.springframework.cloud.gateway: info
+
+auth:
+  jwt-secret: ${JWT_SECRET}

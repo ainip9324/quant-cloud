@@ -1,0 +1,22 @@
+FROM maven:3.9-eclipse-temurin-17 AS builder
+WORKDIR /build
+COPY docker/maven-settings.xml /root/.m2/settings.xml
+
+COPY pom.xml ./root/pom.xml
+RUN mvn -q -f root/pom.xml -N install -DskipTests
+
+COPY quant-common/pom.xml ./quant-common/pom.xml
+COPY quant-common/src ./quant-common/src
+RUN mvn -q -f quant-common/pom.xml install -DskipTests
+
+COPY quant-ai-service/pom.xml ./quant-ai-service/pom.xml
+RUN mvn -q -f quant-ai-service/pom.xml dependency:go-offline -DskipTests
+COPY quant-ai-service/src ./quant-ai-service/src
+RUN mvn -q -f quant-ai-service/pom.xml package -DskipTests
+
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY --from=builder /build/quant-ai-service/target/*.jar app.jar
+COPY docker/healthcheck.sh /healthcheck.sh
+RUN chmod +x /healthcheck.sh
+ENTRYPOINT ["java", "-jar", "app.jar"]

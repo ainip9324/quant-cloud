@@ -1,0 +1,37 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Java 构建产物（容器内重新编译，避免污染）
+**/target/
+
+# 前端构建产物和依赖（容器内重新安装构建）
+quant-frontend/node_modules/
+quant-frontend/dist/
+
+# 文档（不需要打入镜像）
+docs/
+
+# 其他
+*.md
+.gradle/
+
+.dsh/
+.idea/
+.tools/
+.trae/
+
+# Keep local deployment records, data, and personal files out of the build context.
+tmp/
+hikiUse/
+outputs/
+
+# Runtime secrets never enter Docker build context.
+.env
+.env.*
+!.env.example

@@ -1,0 +1,2 @@
+export const WORKSPACE_CANDLE_LIMIT = 1000
+export const DEFAULT_VISIBLE_CANDLES = 200

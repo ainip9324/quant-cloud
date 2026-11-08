@@ -1,0 +1,307 @@
+name: ${QUANT_COMPOSE_PROJECT:-quantcloud}
+
+x-app-database: &app-database
+  SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/quant_cloud?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+  SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-quantcloud}
+  SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+
+x-java-healthcheck: &java-healthcheck
+  test: ["CMD", "/healthcheck.sh"]
+  interval: 15s
+  timeout: 10s
+  retries: 10
+  start_period: 60s
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: quant_cloud
+      MYSQL_USER: ${MYSQL_USER:-quantcloud}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - type: bind
+        source: ./docker/init/sql
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        bind:
+          create_host_path: false
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP -h 127.0.0.1 -u "$${MYSQL_USER}" "$${MYSQL_DATABASE}" -Nse 'SELECT 1 FROM market_briefing LIMIT 1' >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  nacos:
+    image: nacos/nacos-server:v2.3.0
+    environment:
+      MODE: standalone
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    volumes:
+      - nacos_data:/home/nacos/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8848/nacos/v1/console/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.3.1
+    environment:
+      JAVA_OPT_EXT: -server -Xms256m -Xmx256m -Xmn128m
+    command: ["sh", "mqnamesrv"]
+    volumes:
+      - rocketmq_namesrv_logs:/home/rocketmq/logs
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/9876"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  rocketmq-broker:
+    image: apache/rocketmq:5.3.1
+    # Preserve write access to the log and store volumes on a new installation.
+    user: root
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      JAVA_OPT_EXT: -server -Xms512m -Xmx512m -Xmn256m
+    volumes:
+      - rocketmq_broker_logs:/home/rocketmq/logs
+      - rocketmq_broker_store:/home/rocketmq/store
+      - type: bind
+        source: ./docker/rocketmq/broker/conf/broker.conf
+        target: /home/rocketmq/rocketmq-5.3.1/conf/broker.conf
+        read_only: true
+        bind:
+          create_host_path: false
+    command: ["sh", "mqbroker", "-c", "/home/rocketmq/rocketmq-5.3.1/conf/broker.conf"]
+    depends_on:
+      rocketmq-namesrv:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/10911"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+
+  data-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.java
+      args:
+        MODULE: quant-data-service
+    command: ["--bitget.live.enabled=${BITGET_LIVE_ENABLED:-true}"]
+    environment:
+      <<: *app-database
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NACOS_ADDR: nacos:8848
+      BITGET_PROXY_ENABLED: ${BITGET_PROXY_ENABLED:-false}
+      BITGET_PROXY_HOST: ${BITGET_PROXY_HOST:-}
+      BITGET_PROXY_PORT: ${BITGET_PROXY_PORT:-0}
+      HEALTHCHECK_PORT: "8081"
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      CORE_DATA_SERVICE_SECRET: ${CORE_DATA_SERVICE_SECRET:?Set CORE_DATA_SERVICE_SECRET in .env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+    healthcheck: *java-healthcheck
+    restart: unless-stopped
+
+  core-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.java
+      args:
+        MODULE: quant-core-service
+    command:
+      - --spring.data.redis.host=redis
+      - --spring.data.redis.port=6379
+      - --market-zones.enabled=${MARKET_ZONES_ENABLED:-true}
+      - --market-monitor.enabled=${MARKET_MONITOR_ENABLED:-true}
+      - --market-workspace.enabled=${MARKET_WORKSPACE_ENABLED:-true}
+    environment:
+      <<: *app-database
+      NACOS_ADDR: nacos:8848
+      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
+      HEALTHCHECK_PORT: "8082"
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      CORE_DATA_SERVICE_SECRET: ${CORE_DATA_SERVICE_SECRET:?Set CORE_DATA_SERVICE_SECRET in .env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+      rocketmq-broker:
+        condition: service_healthy
+      data-service:
+        condition: service_healthy
+    healthcheck: *java-healthcheck
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.java
+      args:
+        MODULE: quant-gateway
+    environment:
+      NACOS_ADDR: nacos:8848
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      HEALTHCHECK_PORT: "8080"
+    depends_on:
+      nacos:
+        condition: service_healthy
+      data-service:
+        condition: service_healthy
+      core-service:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    healthcheck: *java-healthcheck
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ai
+    environment:
+      <<: *app-database
+      AI_MODEL_PROVIDER: deepseek
+      # The fake override intentionally permits an empty key during interpolation.
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      AI_MODEL_TIMEOUT: ${AI_MODEL_TIMEOUT:-30s}
+      AI_REPORT_TOTAL_TIMEOUT: ${AI_REPORT_TOTAL_TIMEOUT:-90s}
+      AI_KNOWLEDGE_ENABLED: ${AI_KNOWLEDGE_ENABLED:-true}
+      AI_KNOWLEDGE_THINKING_ENABLED: ${AI_KNOWLEDGE_THINKING_ENABLED:-true}
+      AI_KNOWLEDGE_RETRIEVAL_PORT: "18584"
+      AI_KNOWLEDGE_PUBLIC_QUOTE_ENABLED: ${AI_KNOWLEDGE_PUBLIC_QUOTE_ENABLED:-true}
+      AI_KNOWLEDGE_RESEARCH_WORKFLOW_ENABLED: ${AI_KNOWLEDGE_RESEARCH_WORKFLOW_ENABLED:-true}
+      AI_KNOWLEDGE_REDIS_HOST: redis
+      AI_KNOWLEDGE_SECURE_COOKIE: ${AI_KNOWLEDGE_SECURE_COOKIE:-false}
+      AI_KNOWLEDGE_VISITOR_DAILY_LIMIT: ${AI_KNOWLEDGE_VISITOR_DAILY_LIMIT:-5}
+      AI_KNOWLEDGE_VISITOR_POOL_DAILY_LIMIT: ${AI_KNOWLEDGE_VISITOR_POOL_DAILY_LIMIT:-30}
+      AI_KNOWLEDGE_ACCOUNT_DAILY_LIMIT: ${AI_KNOWLEDGE_ACCOUNT_DAILY_LIMIT:-20}
+      AI_KNOWLEDGE_TOTAL_DAILY_LIMIT: ${AI_KNOWLEDGE_TOTAL_DAILY_LIMIT:-60}
+      CORE_GATEWAY_BASE_URL: http://gateway:8080
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      HEALTHCHECK_PORT: "8083"
+    healthcheck: *java-healthcheck
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The Java client and the retrieval worker use private loopback ports.
+  knowledge-pgvector:
+    image: pgvector/pgvector:0.8.7-pg17-bookworm
+    network_mode: service:ai-service
+    environment:
+      POSTGRES_USER: knowledge_eval
+      POSTGRES_DB: quant_knowledge_eval
+      POSTGRES_PASSWORD: ${KNOWLEDGE_PG_PASSWORD:-}
+      PGPORT: "18585"
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-p", "18585"]
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - type: bind
+        source: ./docker/pgvector/init.sql
+        target: /docker-entrypoint-initdb.d/10-enable-vector.sql
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      ai-service:
+        condition: service_started
+        restart: true
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "18585", "-U", "knowledge_eval", "-d", "quant_knowledge_eval"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+
+  knowledge-retrieval:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.retrieval
+    network_mode: service:ai-service
+    environment:
+      KNOWLEDGE_EVAL_PG_PASSWORD: ${KNOWLEDGE_PG_PASSWORD:-}
+    depends_on:
+      ai-service:
+        condition: service_started
+        restart: true
+      knowledge-pgvector:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 18584), 1).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "${QUANT_HTTP_BIND:-127.0.0.1}:${QUANT_HTTP_PORT:-8088}:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
+  nacos_data:
+  rocketmq_namesrv_logs:
+  rocketmq_broker_logs:
+  rocketmq_broker_store:

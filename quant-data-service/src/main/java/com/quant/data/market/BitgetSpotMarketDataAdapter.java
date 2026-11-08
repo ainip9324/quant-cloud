@@ -1,0 +1,3 @@
+package com.quant.data.market;
+import com.quant.common.market.MarketType; import com.quant.common.model.Kline; import java.util.*; import org.springframework.stereotype.Component;
+@Component public class BitgetSpotMarketDataAdapter implements MarketDataAdapter { private final BitgetRestClient client; public BitgetSpotMarketDataAdapter(BitgetRestClient client){this.client=client;} public MarketType marketType(){return MarketType.SPOT;} public List<Kline> fetch(MarketDataQuery q){return client.fetch("/api/v2/spot/market/candles",Map.of("symbol",q.selection().symbol(),"granularity",q.selection().interval(),"limit",String.valueOf(q.limit())));}}

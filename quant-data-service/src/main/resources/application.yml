@@ -1,0 +1,56 @@
+server:
+  port: 8081
+
+spring:
+  datasource:
+    # 本地开发默认 localhost:3307；Docker 全栈通过环境变量覆盖为 mysql:3306
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3307}/quant_cloud?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+
+# MyBatis-Plus
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    map-underscore-to-camel-case: true
+
+# Bitget 配置（代理默认关闭，需要时在 Nacos 中开启）
+bitget:
+  base-url: https://api.bitget.com
+  # Explicit opt-in only after Slice 2 runtime migration and a separately approved window.
+  live:
+    enabled: ${BITGET_LIVE_ENABLED:false}
+    websocket-url: ${BITGET_LIVE_WEBSOCKET_URL:wss://ws.bitget.com/v2/ws/public}
+  proxy:
+    enabled: false
+    host: 127.0.0.1
+    port: 7897
+
+# 健康检查（供 Docker healthcheck 使用）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.quant: info
+
+auth:
+  jwt-secret: ${JWT_SECRET}
+
+core-service-identity:
+  credential: ${CORE_DATA_SERVICE_SECRET}

@@ -1,0 +1,146 @@
+[
+  {
+    "id": "trend-basics",
+    "question": "趋势跟踪策略是怎么判断方向的？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["trend-following-v1"]
+  },
+  {
+    "id": "trend-sideways",
+    "question": "为什么跟随价格方向的策略在横盘时容易来回亏钱？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["trend-following-v1"]
+  },
+  {
+    "id": "turtle-zh",
+    "question": "海龟",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["turtle-trading-v1"]
+  },
+  {
+    "id": "turtle-en",
+    "question": "Turtle",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["turtle-trading-v1"]
+  },
+  {
+    "id": "turtle-sizing",
+    "question": "经典海龟规则为什么要用 N 来确定仓位和止损距离？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["turtle-trading-v1"]
+  },
+  {
+    "id": "order-comparison",
+    "question": "市价单和限价单有啥区别？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["order-types-v1"]
+  },
+  {
+    "id": "order-fill",
+    "question": "都碰到我挂的价格了，为啥还没成交？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["order-types-v1"]
+  },
+  {
+    "id": "overfitting",
+    "question": "参数在过去行情上调到收益最好，为什么换一段行情就不灵了？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["backtest-overfitting-v1"]
+  },
+  {
+    "id": "holdout",
+    "question": "每次看完样本外结果再改参数，最后这段样本还能独立验证策略吗？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["backtest-overfitting-v1"]
+  },
+  {
+    "id": "funding-direction",
+    "question": "永续合约费率为负，资金费是谁付给谁？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["perpetual-funding-v1"]
+  },
+  {
+    "id": "funding-settlement",
+    "question": "在资金费结算前平仓，还会收这次资金费吗？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["perpetual-funding-v1"]
+  },
+  {
+    "id": "margin-comparison",
+    "question": "一笔合约仓位亏损会牵连账户其他权益吗？比较全仓和逐仓。",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["margin-liquidation-v1"]
+  },
+  {
+    "id": "slippage",
+    "question": "为什么成交价和预期不一样，做回测怎么考虑这个差额？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["execution-costs-v1"]
+  },
+  {
+    "id": "drawdown",
+    "question": "回测报告的最大回撤是从哪个点跌到哪个点？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["maximum-drawdown-v1"]
+  },
+  {
+    "id": "drawdown-valuation",
+    "question": "按收盘权益算的最大回撤能看出盘中亏到过多少吗？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["maximum-drawdown-v1"]
+  },
+  {
+    "id": "order-and-costs",
+    "question": "为什么市价单成交价可能变差？回测里固定滑点和真实成交有什么差别？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["order-types-v1", "execution-costs-v1"]
+  },
+  {
+    "id": "funding-and-margin",
+    "question": "永续合约资金费正的时候谁付钱？逐仓和全仓又怎么分担仓位亏损？",
+    "expectedStatus": "ANSWERED",
+    "expectedSourceIds": ["perpetual-funding-v1", "margin-liquidation-v1"]
+  },
+  {
+    "id": "wave",
+    "question": "波浪",
+    "expectedStatus": "GENERAL",
+    "expectedSourceIds": []
+  },
+  {
+    "id": "mean-reversion",
+    "question": "什么是均值回归策略？",
+    "expectedStatus": "GENERAL",
+    "expectedSourceIds": []
+  },
+  {
+    "id": "ambiguous",
+    "question": "它怎么加仓？",
+    "expectedStatus": "CLARIFY",
+    "expectedSourceIds": []
+  },
+  {
+    "id": "animal",
+    "question": "海龟是怎么呼吸的？",
+    "expectedStatus": "OUT_OF_SCOPE",
+    "expectedSourceIds": []
+  },
+  {
+    "id": "live-price",
+    "question": "今天 BTC 多少钱？",
+    "expectedStatus": "INSUFFICIENT",
+    "expectedSourceIds": []
+  },
+  {
+    "id": "private-task",
+    "question": "回测任务 113 赚了多少？",
+    "expectedStatus": "INSUFFICIENT",
+    "expectedSourceIds": []
+  },
+  {
+    "id": "unpublished-rule",
+    "question": "QuantCloud 的 Turtle v1 具体用几倍 ATR 做止损？",
+    "expectedStatus": "INSUFFICIENT",
+    "expectedSourceIds": []
+  }
+]

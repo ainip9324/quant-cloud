@@ -1,0 +1,49 @@
+# Local secrets and machine-specific environment overrides
+.env
+.env.*
+!.env.example
+
+# Build output and local tooling
+**/target/
+**/dist/
+**/node_modules/
+coverage/
+*.log
+*.log.*
+*.pid
+*.tmp
+*.bak
+*.swp
+.idea/
+.vscode/
+*.iml
+
+# Codex/agent and machine-local tooling
+.tools/
+.dsh/
+.trae/
+.codex/
+.codex-output/
+tmp/
+!docs/current-planning/tmp/
+docs/current-planning/tmp/*
+!docs/current-planning/tmp/*.md
+temp/
+output/
+python-*-amd64.exe
+
+# Local data files
+*.db
+*.sqlite
+*.sqlite3
+
+# Local certificates and private keys
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local Spring overrides may contain credentials
+**/application-local.yml
+**/application-local.yaml
+**/application-local.properties

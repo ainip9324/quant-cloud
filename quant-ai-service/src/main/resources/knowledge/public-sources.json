@@ -1,0 +1,66 @@
+[
+  {
+    "id": "trend-following-v1",
+    "title": "趋势跟踪入门",
+    "category": "通用策略知识",
+    "version": "v1",
+    "content": "趋势跟踪是用历史价格信号识别已有方向，再按规则顺着该方向持仓的一类策略。通道突破、均线和近期收益方向都可以作为信号。趋势延续时，策略有机会跟随较长一段走势。趋势反转时，信号通常要等价格变化才会调整。震荡中的反复进出会产生损失和交易成本。时间序列动量是趋势跟踪的一种实现，研究中的历史表现不能推断某个市场未来会盈利。",
+    "url": "https://doi.org/10.1016/j.jfineco.2011.11.003"
+  },
+  {
+    "id": "turtle-trading-v1",
+    "title": "海龟策略的规则与取舍",
+    "category": "通用策略知识",
+    "version": "v1",
+    "content": "经典海龟交易是一套趋势跟踪规则。它通过价格突破历史通道寻找入场机会，用近期真实波幅的平滑估计 N 来安排仓位、加仓间距和止损距离。ATR 也是衡量真实波幅的指标，基于 ATR 的止损会按波动大小设置距离。海龟规则的优势是入场、仓位和退出条件明确，便于复现和检验，也能在趋势持续时逐步加仓。局限是震荡时假突破会引发连续亏损，快速反转和跳空可能使成交偏离止损价格。规则的执行结果还受交易成本和滑点影响。此处描述经典方法，平台实现的参数应以其单独公布的规范为准。",
+    "url": "https://tradingblox.com/originalturtles/originalturtlerules.htm"
+  },
+  {
+    "id": "order-types-v1",
+    "title": "市价单与限价单",
+    "category": "交易机制",
+    "version": "v1",
+    "content": "市价单以尽快按可得报价成交为目标，实际成交价可能与提交时看到的报价不同。限价单约束可接受的价格，买入限价单只接受限价或更低，卖出限价单只接受限价或更高。即使触及限价，也可能因为数量和排队顺序只成交一部分或没有成交。来源介绍证券订单的通用概念，具体市场规则以交易场所规定为准。",
+    "url": "https://www.investor.gov/introduction-investing/investing-basics/how-stock-markets-work/types-orders"
+  },
+  {
+    "id": "backtest-overfitting-v1",
+    "title": "回测过拟合",
+    "category": "回测方法",
+    "version": "v1",
+    "content": "反复在同一段历史数据上尝试策略或参数，可能挑出恰好符合该样本噪声的方案。样本内排名靠前的配置，在新数据上可能表现平平。区分策略选择与样本外检验，并记录尝试过多少方案，有助于理解回测成绩的局限。反复根据样本外结果调参，也会削弱该样本作为独立检验的作用。",
+    "url": "https://escholarship.org/uc/item/4w1110bb"
+  },
+  {
+    "id": "perpetual-funding-v1",
+    "title": "永续合约资金费率",
+    "category": "交易机制",
+    "version": "v1",
+    "content": "资金费由永续合约的多空持仓方定期交换，帮助合约价格贴近现货。费率为正时多头付给空头，为负时方向相反。结算时仍持仓才会收付，结算间隔视合约而定。",
+    "url": "https://www.bitget.com/futures/introduction/futures-summarize"
+  },
+  {
+    "id": "margin-liquidation-v1",
+    "title": "逐仓、全仓与强平",
+    "category": "风险管理",
+    "version": "v1",
+    "content": "逐仓按单个仓位的保证金和浮动盈亏评估风险。全仓在适用范围内共享保证金，多个仓位的亏损可能共同消耗权益。以 Bitget 为例，强平按标记价格和维持保证金规则判断。",
+    "url": "https://www.bitget.com/support/articles/360058821652"
+  },
+  {
+    "id": "execution-costs-v1",
+    "title": "回测中的手续费和滑点",
+    "category": "回测方法",
+    "version": "v1",
+    "content": "手续费是成交产生的显性费用。滑点是预期成交价和实际成交价的差，受波动、流动性和订单大小影响。回测可计入手续费并模拟滑点，固定滑点只是对真实成交条件的近似。",
+    "url": "https://www.tradingview.com/pine-script-docs/concepts/strategies/#simulating-trading-costs"
+  },
+  {
+    "id": "maximum-drawdown-v1",
+    "title": "如何理解最大回撤",
+    "category": "风险管理",
+    "version": "v1",
+    "content": "最大回撤衡量观察期间权益从某个高点到之后低点的最大跌幅。按收盘权益计算时，只比较收盘点，可能遗漏盘中跌幅。比较回测时应先确认采用相同的计算口径。",
+    "url": "https://www.tradingview.com/support/solutions/43000773376-max-drawdown-close-to-close/"
+  }
+]

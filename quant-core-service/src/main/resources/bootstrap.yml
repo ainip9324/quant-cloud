@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: quant-core-service
+  cloud:
+    nacos:
+      # 配置中心：启动时从 Nacos 拉取 quant-core-service.yaml
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        file-extension: yaml

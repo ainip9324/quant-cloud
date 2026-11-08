@@ -1,0 +1,38 @@
+name: ${QUANT_DEV_COMPOSE_PROJECT:-quantcloud-dev}
+
+services:
+  data-service:
+    command: ["--bitget.live.enabled=false"]
+
+  core-service:
+    command:
+      - --spring.data.redis.host=redis
+      - --spring.data.redis.port=6379
+      - --market-zones.enabled=false
+      - --market-monitor.enabled=false
+      - --market-workspace.enabled=false
+
+  ai-service:
+    environment:
+      AI_MODEL_PROVIDER: fake
+      DEEPSEEK_API_KEY: ""
+      AI_KNOWLEDGE_RETRIEVAL_PORT: "0"
+      AI_KNOWLEDGE_PUBLIC_QUOTE_ENABLED: "false"
+      AI_KNOWLEDGE_RESEARCH_WORKFLOW_ENABLED: "false"
+    command:
+      - --spring.ai.model.chat=none
+      - --spring.ai.model.audio.speech=none
+      - --spring.ai.model.audio.transcription=none
+      - --spring.ai.model.embedding=none
+      - --spring.ai.model.image=none
+      - --spring.ai.model.moderation=none
+
+  knowledge-pgvector:
+    profiles: [vector]
+
+  knowledge-retrieval:
+    profiles: [vector]
+
+  gateway:
+    ports:
+      - "127.0.0.1:${QUANT_DEV_GATEWAY_PORT:-8080}:8080"

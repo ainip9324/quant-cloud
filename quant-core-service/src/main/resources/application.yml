@@ -1,0 +1,91 @@
+server:
+  port: 8082
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      connect-timeout: 2s
+      timeout: 2s
+      repositories:
+        enabled: false
+  datasource:
+    # 本地开发默认 localhost:3307；Docker 全栈通过环境变量覆盖为 mysql:3306
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3307}/quant_cloud?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+    # Feign 调 data-service 超时配置（data-service 可能调 Bitget，给足时间）
+    openfeign:
+      client:
+        config:
+          quant-data-service:
+            connect-timeout: 5000
+            read-timeout: 30000
+
+# MyBatis-Plus
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+
+# 健康检查（供 Docker healthcheck 与网关聚合使用）
+management:
+  health:
+    # Monitor availability is reported by its read model, not a new default core health probe.
+    redis:
+      enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
+
+# RocketMQ（Week 3 事件驱动回测）
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+  producer:
+    group: backtest-producer-group
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+
+# 回测调度配置
+backtest:
+  topic: backtest-execute
+  consumer-group: backtest-consumer-group
+  dlq-consumer-group: backtest-dlq-consumer-group
+  watchdog:
+    # RUNNING 超时阈值：保守 30 分钟，用于恢复进程崩溃后卡住的任务。
+    # 注意：正常长回测可能超过 30 分钟，此时会被误回收——这是已知的权衡。
+    # 后续增强：引入心跳租约机制（processor 定期更新 update_time）替代固定超时。
+    running-timeout-minutes: 30
+    waiting-timeout-minutes: 5
+    poll-interval-ms: 60000
+    waiting-compensate-limit: 10
+
+auth:
+  jwt-secret: ${JWT_SECRET}
+  token-expire-hours: 2
+
+core-data-service:
+  credential: ${CORE_DATA_SERVICE_SECRET}
+
+# Opt in only after the separately approved 09 schema migration.
+market-zones:
+  enabled: ${MARKET_ZONES_ENABLED:false}
+
+market-monitor:
+  enabled: ${MARKET_MONITOR_ENABLED:false}
+
+market-workspace:
+  enabled: ${MARKET_WORKSPACE_ENABLED:false}
+
+logging:
+  level:
+    com.quant: info

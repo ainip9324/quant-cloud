@@ -1,0 +1,22 @@
+FROM python:3.12-slim-bookworm
+WORKDIR /app
+
+ENV HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
+    HF_HUB_DISABLE_TELEMETRY=1
+
+RUN pip install --disable-pip-version-check --no-cache-dir fastembed==0.9.1 "psycopg[binary]==3.3.8"
+
+# Use the same public embedding snapshot as the verified local retrieval deployment.
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download(repo_id='Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q', \
+    revision='faf4aa4225822f3bc6376869cb1164e8e3feedd0', local_dir='/opt/quantcloud/model', \
+    allow_patterns=['config.json', 'model_optimized.onnx', 'special_tokens_map.json', 'tokenizer.json', 'tokenizer_config.json'])"
+
+ENV HF_HUB_OFFLINE=1 \
+    FASTEMBED_CACHE_PATH=/opt/quantcloud/cache
+
+COPY quant-ai-service/eval/knowledge/serve.py quant-ai-service/eval/knowledge/retrieval.py ./quant-ai-service/eval/knowledge/
+COPY quant-ai-service/src/main/resources/knowledge/public-sources.json ./quant-ai-service/src/main/resources/knowledge/
+
+ENTRYPOINT ["python", "-B", "quant-ai-service/eval/knowledge/serve.py"]
+CMD ["--port", "18584", "--pg-port", "18585", "--model-path", "/opt/quantcloud/model"]
