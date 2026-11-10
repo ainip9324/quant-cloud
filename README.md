@@ -25,39 +25,39 @@ QuantCloud 是一个量化研究工作台，提供 Spot 与 USDT Futures 行情�
 | [compose.yaml](compose.yaml) | 正常启动入口 |
 | [docker](docker/) | 开发覆盖、镜像构建与数据库初始化 |
 
-## 启动
+## 快速启动
 
-安装 Docker 与 Compose，将 [环境模板](.env.example) 复制为仓库根目录的 `.env`。两种模式都需要填写 `JWT_SECRET`、`CORE_DATA_SERVICE_SECRET`、`MYSQL_ROOT_PASSWORD` 和 `MYSQL_PASSWORD`。JWT 与服务间凭据各至少 32 字节，使用不同的随机值。
+1. 安装 Docker 和 Compose 插件。Windows 可使用 [Docker Desktop 的 WSL 2 后端](https://docs.docker.com/desktop/features/wsl/)。首次安装 WSL 时，在管理员终端执行 `wsl --install` 并重启。启动 Docker 后，用 `docker info` 确认引擎可用，用 `docker compose version` 确认 Compose 可用。 [微软 WSL 安装说明](https://learn.microsoft.com/zh-cn/windows/wsl/install)
+2. 获取 `sit` 源码。也可以直接[下载 sit ZIP](https://github.com/ainip9324/quant-cloud/archive/refs/heads/sit.zip)，解压后进入包含 `compose.yaml` 的目录。
 
-### 正常启动
+   ```sh
+   git clone --branch sit --single-branch https://github.com/ainip9324/quant-cloud.git
+   cd quant-cloud
+   ```
 
-PowerShell 可直接运行 `.\start.ps1`。
+3. 在仓库根目录把 [`.env.example`](.env.example) 复制为 `.env`。两种模式都要填写 `JWT_SECRET`、`CORE_DATA_SERVICE_SECRET`、`MYSQL_ROOT_PASSWORD` 和 `MYSQL_PASSWORD`。为两种身份凭据各生成一份独立的至少 32 字节随机值。正常模式还需要填写 `DEEPSEEK_API_KEY` 和 `KNOWLEDGE_PG_PASSWORD`。请将实际凭据保存在本机 `.env`。
 
-在 `.env` 填写 `DEEPSEEK_API_KEY` 和 `KNOWLEDGE_PG_PASSWORD`，然后从仓库根目录启动。
+### 正常模式
 
 ```sh
-docker compose up -d
+docker compose config -q
+docker compose up -d --build
 docker compose ps
 ```
 
-默认入口为 `http://localhost:8088`。服务启用实时行情、共享盘面、DeepSeek 问答、向量检索、只读报价和混合问答。首次构建会下载依赖和指定版本的公开 Embedding 权重，运行时从镜像加载权重。Bitget 默认直连，需要代理时按环境模板填写容器可达的地址和端口。
+等服务健康后访问 [本机 QuantCloud](http://127.0.0.1:8088)。正常模式启用实时盘面、DeepSeek 和向量检索。已有镜像时，Windows 可用 `.\start.ps1` 启动。
 
 ### 开发联调
 
-PowerShell 可直接运行 `.\start-dev.ps1`。
-
 ```sh
-docker compose -f compose.yaml -f docker/compose.dev.yaml up -d
+docker compose -f compose.yaml -f docker/compose.dev.yaml config -q
+docker compose -f compose.yaml -f docker/compose.dev.yaml up -d --build
 docker compose -f compose.yaml -f docker/compose.dev.yaml ps
 ```
 
-联调使用 fake 模型，`DEEPSEEK_API_KEY` 和 `KNOWLEDGE_PG_PASSWORD` 可以留空。实时行情、区域监控、盘面、只读报价和混合问答关闭。联调项目拥有独立的网络和数据卷。并行启动时，为不同项目配置不同的 `QUANT_HTTP_PORT`。
+联调使用 fake 模型，可将 `DEEPSEEK_API_KEY` 和 `KNOWLEDGE_PG_PASSWORD` 留空。向量检索和实时盘面默认关闭，历史行情请求仍可能访问 Bitget。已有镜像时，Windows 可用 `.\start-dev.ps1` 启动。
 
-## 数据库初始化
-
-Compose 在首次使用空 MySQL 数据卷时，自动执行 [01_schema.sql](docker/init/sql/01_schema.sql) 建表，再由 [02_seed.sql](docker/init/sql/02_seed.sql) 创建一条空白盘面简报。使用已有数据卷升级时，按已有库的版本安排迁移。容器重启会保留已有表和数据。
-
-新库没有预置登录账号。先注册自己的账号，再由数据库管理员将对应的 `users.role` 设置为 `ADMIN` 并重新登录。普通注册账号默认是 `VIEWER`。
+首次建库、设置管理员、局域网访问和常见启动故障见[部署与排障指南](DEPLOYMENT.md)。
 
 ## 离线评测
 
