@@ -93,10 +93,13 @@ public class ZoneMonitoringService {
         mapper.selectObservations(scope).forEach(row -> observed.put(row.getZoneId(), row));
         long now = clock.millis();
         for (MarketZoneRow zone : definitions) {
-            if (zone.getLifecycle() != ZoneLifecycle.ACTIVE || snapshot.priceTime() < zone.getEffectiveFrom()) continue;
+            if (!zone.isObservableAt(snapshot.priceTime())
+                    || zone.getEffectiveUntil() != null && now >= zone.getEffectiveUntil()) continue;
             ZoneObservationRow old = observed.get(zone.getId());
             boolean initialize = baseline || old == null || !Objects.equals(old.getZoneRevision(), zone.getRevision());
-            ObservationState next = ObservationState.at(snapshot.lastPrice(), zone.getLowerPrice(), zone.getUpperPrice());
+            BigDecimal lower = zone.lowerPriceAt(snapshot.priceTime());
+            BigDecimal upper = lower.add(zone.getUpperPrice().subtract(zone.getLowerPrice()));
+            ObservationState next = ObservationState.at(snapshot.lastPrice(), lower, upper);
             if (!initialize && (!newPriceTime || old.getState() == next)) continue;
             if (!initialize) {
                 ZoneEvent event = event(scope, zone, old.getState(), next, snapshot, now);
@@ -171,7 +174,8 @@ public class ZoneMonitoringService {
 
     private MarketMonitorView.Observation view(MarketZoneRow zone, ZoneObservationRow row, MonitorCursor cursor, Status status) {
         boolean current = status == Status.LIVE && row != null && Objects.equals(row.getZoneRevision(), zone.getRevision())
-                && cursor != null && cursor.getPriceTime() >= zone.getEffectiveFrom();
+                && cursor != null && zone.isObservableAt(cursor.getPriceTime())
+                && (zone.getEffectiveUntil() == null || clock.millis() < zone.getEffectiveUntil());
         return new MarketMonitorView.Observation(zone.getId(), zone.getRevision(), row == null ? null : row.getZoneRevision(),
                 row == null ? null : row.getState(), row == null ? null : row.getState().role(), row == null ? null : row.getStatePrice(),
                 row == null ? null : row.getStateMarketTime(), row == null ? null : row.getRecordedAt(), current);

@@ -71,7 +71,7 @@ backtest:
 
 auth:
   jwt-secret: ${JWT_SECRET}
-  token-expire-hours: 2
+  token-expire-hours: 8
 
 core-data-service:
   credential: ${CORE_DATA_SERVICE_SECRET}

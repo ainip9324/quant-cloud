@@ -6,5 +6,7 @@ import java.math.BigDecimal;
 public record ZoneDefinition(String marketType, String symbol, String interval,
                              BigDecimal lowerPrice, BigDecimal upperPrice,
                              @JsonDeserialize(using = StrictZoneLongDeserializer.class) Long effectiveFrom,
+                             @JsonDeserialize(using = StrictZoneLongDeserializer.class) Long effectiveUntil,
+                             BigDecimal endLowerPrice,
                              String note,
                              @JsonDeserialize(using = StrictZoneLongDeserializer.class) Long expectedVersion) { }

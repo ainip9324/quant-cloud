@@ -36,7 +36,7 @@ public class MarketZoneService {
         lockScope(definition.selection());
         List<MarketZoneRow> reserved = reserved(definition.selection());
         if (reserved.size() >= MAX_RESERVED) throw MarketZoneException.conflict("MARKET_ZONE_LIMIT", "Scope has 100 unarchived zones");
-        ensureNoOverlap(reserved, null, definition.lower(), definition.upper());
+        ensureNoOverlap(reserved, null, definition);
         MarketZoneRow row = new MarketZoneRow();
         row.setMarketType(definition.selection().marketType());
         row.setSymbol(definition.selection().symbol());
@@ -64,7 +64,7 @@ public class MarketZoneService {
                 || !row.getAnalysisInterval().equals(definition.selection().interval())) {
             throw MarketZoneException.invalid("Market identity is immutable; create a new zone instead");
         }
-        ensureNoOverlap(reserved(definition.selection()), row.getId(), definition.lower(), definition.upper());
+        ensureNoOverlap(reserved(definition.selection()), row.getId(), definition);
         apply(row, definition);
         persistChange(row, expected, actor.userId());
         return row.snapshot();
@@ -80,7 +80,9 @@ public class MarketZoneService {
         if (row.getLifecycle() == target) return row.snapshot();
         requireMutable(row);
         if (target == ZoneLifecycle.ACTIVE) {
-            ensureNoOverlap(reserved(selection(row)), row.getId(), row.getLowerPrice(), row.getUpperPrice());
+            ensureNoOverlap(reserved(selection(row)), row.getId(), new Definition(selection(row),
+                    row.getLowerPrice(), row.getUpperPrice(), row.getEffectiveFrom(),
+                    row.getEffectiveUntil(), row.getEndLowerPrice(), row.getNote()));
         }
         row.setLifecycle(target);
         persistChange(row, expected, actor.userId());
@@ -148,10 +150,15 @@ public class MarketZoneService {
         if (mapper.appendRevision(row.getId()) != 1) throw MarketZoneException.storage();
     }
 
-    private static void ensureNoOverlap(List<MarketZoneRow> existing, Long ownId, BigDecimal lower, BigDecimal upper) {
+    /** 水平区域只在价格和时间都重叠时冲突，图形通道允许交叉。 */
+    private static void ensureNoOverlap(List<MarketZoneRow> existing, Long ownId, Definition definition) {
+        if (definition.endLowerPrice() != null) return;
         for (MarketZoneRow zone : existing) {
-            if (!Objects.equals(ownId, zone.getId()) && lower.compareTo(zone.getUpperPrice()) < 0
-                    && zone.getLowerPrice().compareTo(upper) < 0) {
+            boolean timeOverlaps = (zone.getEffectiveUntil() == null || definition.effectiveFrom() < zone.getEffectiveUntil())
+                    && (definition.effectiveUntil() == null || zone.getEffectiveFrom() < definition.effectiveUntil());
+            if (!Objects.equals(ownId, zone.getId()) && zone.getEndLowerPrice() == null && timeOverlaps
+                    && definition.lower().compareTo(zone.getUpperPrice()) < 0
+                    && zone.getLowerPrice().compareTo(definition.upper()) < 0) {
                 throw MarketZoneException.conflict("MARKET_ZONE_OVERLAP", "Zone overlaps an unarchived zone");
             }
         }
@@ -166,9 +173,18 @@ public class MarketZoneService {
         if (command.effectiveFrom() == null || command.effectiveFrom() <= 0 || command.effectiveFrom() > 253402300799999L) {
             throw MarketZoneException.invalid("effectiveFrom must be positive epoch milliseconds");
         }
+        Long until = command.effectiveUntil();
+        if (until != null && (until <= command.effectiveFrom() || until > 253402300799999L)) {
+            throw MarketZoneException.invalid("effectiveUntil must be after effectiveFrom");
+        }
+        BigDecimal endLower = command.endLowerPrice() == null ? null : price(command.endLowerPrice());
+        if (endLower != null) {
+            if (until == null) throw MarketZoneException.invalid("Parallel channels require effectiveUntil");
+            price(endLower.add(upper.subtract(lower)));
+        }
         String note = command.note() == null ? "" : command.note();
         if (note.length() > 500) throw MarketZoneException.invalid("note must not exceed 500 characters");
-        return new Definition(selection, lower, upper, command.effectiveFrom(), note);
+        return new Definition(selection, lower, upper, command.effectiveFrom(), until, endLower, note);
     }
 
     private static BigDecimal price(BigDecimal value) {
@@ -182,7 +198,10 @@ public class MarketZoneService {
 
     private static void apply(MarketZoneRow row, Definition definition) {
         row.setLowerPrice(definition.lower()); row.setUpperPrice(definition.upper());
-        row.setEffectiveFrom(definition.effectiveFrom()); row.setNote(definition.note());
+        row.setEffectiveFrom(definition.effectiveFrom());
+        row.setEffectiveUntil(definition.effectiveUntil());
+        row.setEndLowerPrice(definition.endLowerPrice());
+        row.setNote(definition.note());
     }
 
     private static MarketSelection selection(MarketZoneRow row) {
@@ -228,5 +247,6 @@ public class MarketZoneService {
         if (actor.role() != UserRole.ADMIN) throw new MarketZoneException(403, "FORBIDDEN", "Access denied");
     }
 
-    private record Definition(MarketSelection selection, BigDecimal lower, BigDecimal upper, long effectiveFrom, String note) { }
+    private record Definition(MarketSelection selection, BigDecimal lower, BigDecimal upper, long effectiveFrom,
+                              Long effectiveUntil, BigDecimal endLowerPrice, String note) { }
 }

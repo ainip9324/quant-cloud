@@ -12,6 +12,8 @@
 
 空 MySQL 数据卷启动时自动执行 [01_schema.sql](docker/init/sql/01_schema.sql) 和 [02_seed.sql](docker/init/sql/02_seed.sql)。种子只创建一条空白交易简报。已有数据卷沿用原有表和账号，升级时按现有库版本安排迁移。
 
+旧库升级到支持平行通道的版本时，先备份 MySQL，在维护窗口中用 MySQL 客户端对 `quant_cloud` 执行 [盘面图形迁移](docker/migrations/market-zone-chart-geometry.sql)，再更新 Core。空库随初始化 SQL 建表，可直接启动。
+
 普通注册账号初始角色为 `VIEWER`。需要管理员时，先在网页注册，确认 `docker compose ps mysql` 显示的是目标部署，再通过容器内的客户端进入 MySQL，按提示输入 `MYSQL_ROOT_PASSWORD`。
 
 ```sh

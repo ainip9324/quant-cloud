@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface MarketZoneMapper {
-    String FIELDS = "market_type,symbol,analysis_interval,lower_price,upper_price,effective_from,note,"
+    String FIELDS = "market_type,symbol,analysis_interval,lower_price,upper_price,effective_from,effective_until,end_lower_price,note,"
             + "lifecycle,revision,created_by,updated_by,created_at,updated_at";
 
     @Insert("INSERT INTO market_zone_scope(market_type,symbol,analysis_interval) VALUES(#{marketType},#{symbol},#{interval}) "
@@ -41,12 +41,14 @@ public interface MarketZoneMapper {
     MarketZoneRow selectByIdForUpdate(@Param("id") long id);
 
     @Insert("INSERT INTO market_zone(" + FIELDS + ") VALUES(#{marketType},#{symbol},#{analysisInterval},#{lowerPrice},"
-            + "#{upperPrice},#{effectiveFrom},#{note},#{lifecycle},#{revision},#{createdBy},#{updatedBy},#{createdAt},#{updatedAt})")
+            + "#{upperPrice},#{effectiveFrom},#{effectiveUntil},#{endLowerPrice},#{note},#{lifecycle},"
+            + "#{revision},#{createdBy},#{updatedBy},#{createdAt},#{updatedAt})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(MarketZoneRow row);
 
     @Update("UPDATE market_zone SET lower_price=#{zone.lowerPrice},upper_price=#{zone.upperPrice},"
-            + "effective_from=#{zone.effectiveFrom},note=#{zone.note},lifecycle=#{zone.lifecycle},revision=#{zone.revision},"
+            + "effective_from=#{zone.effectiveFrom},effective_until=#{zone.effectiveUntil},end_lower_price=#{zone.endLowerPrice},"
+            + "note=#{zone.note},lifecycle=#{zone.lifecycle},revision=#{zone.revision},"
             + "updated_by=#{zone.updatedBy},updated_at=#{zone.updatedAt} "
             + "WHERE id=#{zone.id} AND revision=#{expectedVersion} AND lifecycle!='ARCHIVED'")
     int updateVersion(@Param("zone") MarketZoneRow zone, @Param("expectedVersion") long expectedVersion);
@@ -59,4 +61,5 @@ public interface MarketZoneMapper {
 
     @Select("SELECT zone_id AS id," + FIELDS + " FROM market_zone_revision WHERE zone_id=#{id} AND revision=#{revision}")
     MarketZoneRow selectRevision(@Param("id") long id, @Param("revision") long revision);
+
 }

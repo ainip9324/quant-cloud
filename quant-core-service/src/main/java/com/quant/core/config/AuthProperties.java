@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "auth")
 public class AuthProperties {
     private String jwtSecret;
-    private long tokenExpireHours = 2;
+    private long tokenExpireHours = 8;
     public void setJwtSecret(String value) { jwtSecret = value; }
     public void setTokenExpireHours(long value) { tokenExpireHours = value; }
     public long tokenExpireSeconds() { return tokenExpireHours * 3600; }
