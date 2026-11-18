@@ -11,8 +11,13 @@ import com.quant.common.model.Kline;
 import com.quant.common.model.StrategyEvent;
 import com.quant.common.model.Trade;
 import com.quant.common.model.TradePlan;
+import com.quant.core.indicator.IndicatorUtils;
 import com.quant.core.strategy.Strategy;
 import com.quant.core.strategy.StrategyContext;
+import com.quant.core.strategy.SignalStrategy;
+import com.quant.core.strategy.TradeSignal;
+import com.quant.core.strategy.SignalDecision;
+import com.quant.core.util.IntervalUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -25,7 +30,8 @@ import java.util.Map;
  *
  * <p>职责边界（与 Strategy 严格分离）：
  * <ul>
- *   <li>Strategy：根据 K线 + 持仓状态产生 TradePlan（方向/仓位/止损止盈/平仓原因）</li>
+ *   <li>SignalStrategy：闭合 K 线产生方向与动作，PositionRisk 在下一开盘生成定仓及保护价格</li>
+ *   <li>旧任务 Strategy：继续产生原 TradePlan，保持历史参数和成交解释</li>
  *   <li>BacktestEngine：按 TradePlan 执行保证金记账、强平检查、手续费、收益计算</li>
  * </ul>
  *
@@ -43,7 +49,7 @@ import java.util.Map;
  * 数量始终为正数，方向由 Account.positionSide 表达。第一版不做自动反手，
  * 策略由多转空必须先平仓，下一根 K线才允许开反向仓。
  *
- * <p>每根 K线执行顺序：
+ * <p>旧任务每根 K线执行顺序（信号任务的开盘及盘中顺序见 executeSignalBar）：
  * <pre>① 强平检查（多头用 low / 空头用 high，margin 全损）→ ② 固定止损止盈 → ③ 策略计划</pre>
  * 强平/止损/止盈后本根 K线禁止重新开仓（liquidatedThisBar/closedThisBar），下一根才允许策略重新决策。
  *
@@ -52,6 +58,8 @@ import java.util.Map;
 @Slf4j
 @Component
 public class BacktestEngine {
+    private static final int EMA_VOLATILITY_PERIOD = 20;
+    private static final int EMA_VOLATILITY_BASELINE_PERIOD = 60;
 
     /** 手续费率 0.1%（按名义价值收取） */
     private static final double FEE_RATE = 0.001;
@@ -95,6 +103,11 @@ public class BacktestEngine {
      * @return 组合结果（summary + replay.bars + replay.events）
      */
     public BacktestRunOutput runWithReplay(List<Kline> klines, Strategy strategy, Map<String, Object> params) {
+        SignalRunConfiguration execution = SignalRunConfiguration.from(params, strategy);
+        if (execution != null && klines != null) {
+            long lastOpen = execution.closedBefore() - IntervalUtils.toMillis(execution.interval());
+            klines = klines.stream().filter(bar -> bar.getTime() <= lastOpen).toList();
+        }
         if (klines == null || klines.isEmpty()) {
             log.warn("K线数据为空，返回空结果");
             return emptyOutput();
@@ -118,12 +131,43 @@ public class BacktestEngine {
         strategy.initialize(ctx);
 
         int minPeriod = strategy.getMinPeriod();
+        SignalDecision pending = SignalDecision.of(TradeSignal.HOLD);
+        double pendingAtr = 0;
 
         for (Kline bar : klines) {
             ctx.append(bar);
 
             // 预热期：不足最小周期，不调用策略，权益保持初始资金
             if (ctx.size() < minPeriod) {
+                equityCurve.add(new EquityPoint(bar.getTime(), account.getEquity()));
+                continue;
+            }
+
+            if (execution != null) {
+                boolean protectedExit = executeSignalBar(strategy, ctx, account, bar, pending, execution.risk(), pendingAtr, trades);
+                updateEquity(account, bar.getClose());
+                pending = protectedExit ? SignalDecision.of(TradeSignal.HOLD) : ((SignalStrategy) strategy).onSignal(ctx, bar);
+                boolean entry = pending.action() == TradeSignal.OPEN_LONG || pending.action() == TradeSignal.OPEN_SHORT;
+                Double minimum = execution.risk().minVolatilityRatio();
+                if (entry && minimum != null && minimum > 0 && suppressLowVolatilityEntry(ctx, bar, pending, minimum)) {
+                    pending = SignalDecision.of(TradeSignal.HOLD);
+                }
+                if (pending.action() != TradeSignal.HOLD) {
+                    long confirmedAt = bar.getTime() + IntervalUtils.toMillis(execution.interval());
+                    Map<String, Object> evidence = new java.util.HashMap<>();
+                    evidence.put("action", pending.action().name());
+                    evidence.put("confirmedAt", confirmedAt);
+                    evidence.put("strategyVersion", execution.strategyVersion());
+                    if (pending.sourceRevision() != null) evidence.put("sourceRevision", pending.sourceRevision());
+                    if (execution.risk().usesAtr() && entry) {
+                        // 冻结信号收盘时的 ATR，开盘执行时不读取成交 K 线的高低价。
+                        pendingAtr = IndicatorUtils.calcATR(ctx.history(), execution.risk().atrPeriod());
+                        if (Double.isFinite(pendingAtr)) evidence.put("signalAtr", pendingAtr);
+                    }
+                    ctx.recordEvent(bar.getTime(), StrategyEvent.CATEGORY_DECISION, "SIGNAL_CREATED", pending.sourceId(),
+                            account.getPositionSide(), null, "收盘确认信号，等待下一根开盘执行",
+                            evidence);
+                }
                 equityCurve.add(new EquityPoint(bar.getTime(), account.getEquity()));
                 continue;
             }
@@ -139,12 +183,17 @@ public class BacktestEngine {
             // ② 固定止损止盈 + ③ 策略计划（强平后本根跳过，下一根才允许重新决策）
             if (!liquidatedThisBar) {
                 TradePlan plan = strategy.onBarPlan(ctx, bar);
-                executePlan(strategy, ctx, account, bar, plan, trades);
+                executePlan(strategy, ctx, account, bar, plan, trades, null);
             }
 
             // 记录权益曲线（合约公式：availableBalance + positionMargin + 浮动盈亏）
             updateEquity(account, bar.getClose());
             equityCurve.add(new EquityPoint(bar.getTime(), account.getEquity()));
+        }
+
+        if (execution != null && pending.action() != TradeSignal.HOLD) {
+            ctx.recordEvent(klines.get(klines.size() - 1).getTime(), StrategyEvent.CATEGORY_DECISION,
+                    "SIGNAL_NOT_EXECUTED", pending.sourceId(), "最后一根收盘信号没有后续可执行 K 线");
         }
 
         // ===== 构造回测结果 =====
@@ -179,6 +228,71 @@ public class BacktestEngine {
         return output;
     }
 
+    /** 比较信号收盘的短期波幅与此前的同周期基线，仅过滤入场。 */
+    private boolean suppressLowVolatilityEntry(StrategyContext ctx, Kline bar, SignalDecision signal, double minimum) {
+        List<Kline> history = ctx.history();
+        List<Kline> prior = history.subList(0, history.size() - 1);
+        double baseline = IndicatorUtils.calcATR(prior, EMA_VOLATILITY_BASELINE_PERIOD);
+        double recent = IndicatorUtils.calcATR(history, EMA_VOLATILITY_PERIOD);
+        double ratio = recent / baseline;
+        boolean warmedUp = prior.size() > EMA_VOLATILITY_BASELINE_PERIOD;
+        if (warmedUp && Double.isFinite(recent) && recent > 0 && Double.isFinite(baseline)
+                && recent >= baseline * minimum) return false;
+
+        var details = new java.util.HashMap<String, Object>();
+        details.put("action", signal.action().name());
+        details.put("threshold", minimum);
+        if (Double.isFinite(ratio)) details.put("volatilityRatio", ratio);
+        String message = warmedUp ? "波动不足，过滤 EMA 入场信号" : "波动基线尚未预热，过滤 EMA 入场信号";
+        ctx.recordEvent(bar.getTime(), StrategyEvent.CATEGORY_DECISION, "ENTRY_FILTERED_VOLATILITY", signal.sourceId(),
+                null, bar.getClose(), message, details);
+        return true;
+    }
+
+    /** 下一根开盘执行待处理信号，然后检查本根持仓保护。 */
+    private boolean executeSignalBar(Strategy strategy, StrategyContext ctx, Account account, Kline bar,
+                                     SignalDecision signal, RiskConfiguration risk, double signalAtr, List<Trade> trades) {
+        Kline opening = new Kline();
+        opening.setTime(bar.getTime());
+        opening.setOpen(bar.getOpen()); opening.setHigh(bar.getOpen());
+        opening.setLow(bar.getOpen()); opening.setClose(bar.getOpen());
+        updateEquity(account, bar.getOpen());
+        boolean closed = protectSignalPosition(strategy, ctx, account, opening, trades, true);
+        if (!closed && signal.action() != TradeSignal.HOLD) {
+            TradePlan plan = PositionRisk.plan(signal.action(), risk, bar.getOpen(), account, signalAtr);
+            if (plan == null) {
+                recordRejected(ctx, bar, "INVALID_ATR_PROTECTION", signal.sourceId(),
+                        "ATR 未就绪或无法生成有效保护价", bar.getOpen());
+            } else {
+                plan.setSourceId(signal.sourceId());
+                executePlan(strategy, ctx, account, opening, plan, trades, risk);
+            }
+        }
+        return protectSignalPosition(strategy, ctx, account, bar, trades, false) || closed;
+    }
+
+    /** 跳空保护按开盘价执行，日内同时触及保护价时沿用强平、止损、止盈优先级。 */
+    private boolean protectSignalPosition(Strategy strategy, StrategyContext ctx, Account account, Kline bar,
+                                          List<Trade> trades, boolean opening) {
+        if (account.getPosition() <= 0) return false;
+        if (checkLiquidation(account, bar)) {
+            liquidate(strategy, ctx, account, bar, trades);
+            return true;
+        }
+        PositionSide side = account.getPositionSide();
+        if (account.getStopPrice() > 0 && stopTriggered(side, bar, account.getStopPrice())) {
+            closePosition(strategy, ctx, account, bar, opening ? bar.getOpen() : account.getStopPrice(),
+                    side == PositionSide.SHORT ? "SHORT_STOP" : "STOP", trades);
+            return true;
+        }
+        if (account.getTakeProfitPrice() > 0 && takeProfitTriggered(side, bar, account.getTakeProfitPrice())) {
+            closePosition(strategy, ctx, account, bar, opening ? bar.getOpen() : account.getTakeProfitPrice(),
+                    side == PositionSide.SHORT ? "SHORT_TP" : "TP", trades);
+            return true;
+        }
+        return false;
+    }
+
     /**
      * 执行交易计划（通用执行器，不认识具体策略）
      *
@@ -202,7 +316,8 @@ public class BacktestEngine {
      * SHORT─ADD/CLOSE/STOP/TP→ 保持/NONE    （SHORT 下 OPEN_LONG 非法）
      * </pre>
      */
-    private void executePlan(Strategy strategy, StrategyContext ctx, Account account, Kline bar, TradePlan plan, List<Trade> trades) {
+    private void executePlan(Strategy strategy, StrategyContext ctx, Account account, Kline bar, TradePlan plan,
+                             List<Trade> trades, RiskConfiguration limits) {
         // 1. 持仓止损止盈检查（风控优先，仅对设了固定止损止盈价的持仓）
         boolean closedThisBar = false;
         PositionSide side = account.getPositionSide();
@@ -230,7 +345,7 @@ public class BacktestEngine {
         switch (plan.getAction()) {
             case OPEN_LONG:
                 if (account.getPosition() == 0 && side == PositionSide.NONE) {
-                    openPositionByPlan(strategy, ctx, account, bar, plan, PositionSide.LONG, trades);
+                    openPositionByPlan(strategy, ctx, account, bar, plan, PositionSide.LONG, trades, limits);
                 } else {
                     log.warn("OPEN_LONG 非法: 当前持仓 side={}, 数量={}, 已忽略（单向持仓，需先平仓）",
                             side, account.getPosition());
@@ -240,7 +355,7 @@ public class BacktestEngine {
                 break;
             case OPEN_SHORT:
                 if (account.getPosition() == 0 && side == PositionSide.NONE) {
-                    openPositionByPlan(strategy, ctx, account, bar, plan, PositionSide.SHORT, trades);
+                    openPositionByPlan(strategy, ctx, account, bar, plan, PositionSide.SHORT, trades, limits);
                 } else {
                     log.warn("OPEN_SHORT 非法: 当前持仓 side={}, 数量={}, 已忽略（单向持仓，需先平仓）",
                             side, account.getPosition());
@@ -250,7 +365,7 @@ public class BacktestEngine {
                 break;
             case ADD:
                 if (account.getPosition() > 0) {
-                    addPositionByPlan(strategy, ctx, account, bar, plan, trades);
+                    addPositionByPlan(strategy, ctx, account, bar, plan, trades, limits);
                 } else {
                     log.warn("ADD 非法: 当前无持仓(NONE)，已忽略");
                     recordRejected(ctx, bar, REASON_ILLEGAL_POSITION_STATE, plan.getSourceId(),
@@ -291,14 +406,15 @@ public class BacktestEngine {
     /**
      * 开仓（多空通用）：保证金扣款 + 三重校验（数量/余额/保证金充足），开仓后记录对应方向
      *
-     * <p>成交价约定（OHLC K 线级撮合）：
+     * <p>成交价约定（OHLC K线级撮合）：
      * <ul>
      *   <li>entryPrice 为 null：按当前 K线收盘价成交（旧策略行为不变）</li>
      *   <li>entryPrice 非 null：仅当位于当前 K线 [low,high] 内时按该价成交；否则拒绝成交（跳空不假设计划成交价成交）</li>
      * </ul>
      * 成交成功后发送 OPEN 回报；因数量/余额/保证金不足被拒绝时<b>不发送</b>回报。
      */
-    private void openPositionByPlan(Strategy strategy, StrategyContext ctx, Account account, Kline bar, TradePlan plan, PositionSide side, List<Trade> trades) {
+    private void openPositionByPlan(Strategy strategy, StrategyContext ctx, Account account, Kline bar, TradePlan plan,
+                                     PositionSide side, List<Trade> trades, RiskConfiguration limits) {
         // 计划成交价：仅当该价位于当前 K线 [low, high] 内才成交（limit 语义）
         double price = bar.getClose();
         if (plan.getEntryPrice() != null) {
@@ -313,34 +429,15 @@ public class BacktestEngine {
             }
             price = planned;
         }
-        double base = calcSizingBase(account, plan, price);
-        double amount = calcAmount(base, plan, price);
-
-        // ① 数量有效性校验（必须有限正数）
-        if (!Double.isFinite(amount) || amount <= 0) {
-            log.warn("开仓数量非法 amount={}, 拒绝开仓", amount);
-            recordRejected(ctx, bar, REASON_INVALID_AMOUNT, plan.getSourceId(),
-                    String.format("计算出的开仓数量非法 (%s)，入场未执行", fmt(amount)), price);
+        PositionRisk.Assessment risk = PositionRisk.assess(account, plan, price, FEE_RATE, limits);
+        recordRiskEvaluation(ctx, bar, account, plan, risk, limits);
+        if (risk.rejection() != null) {
+            recordRiskRejection(ctx, bar, risk, plan.getSourceId(), price, account.getAvailableBalance(), false);
             return;
         }
-        // ② 余额归零/负拒绝
-        if (account.getAvailableBalance() <= 0) {
-            log.warn("可用保证金<=0, 拒绝开仓");
-            recordRejected(ctx, bar, REASON_NO_AVAILABLE_BALANCE, plan.getSourceId(),
-                    "可用保证金不足，无法支付任何保证金与手续费，入场未执行", price);
-            return;
-        }
-        // ③ 保证金 + 手续费校验
-        double notional = amount * price;
-        double margin = notional / account.getLeverage();
-        double fee = notional * FEE_RATE;
-        if (account.getAvailableBalance() < margin + fee) {
-            log.warn("保证金不足: 需 {} (保证金{}+手续费{}), 可用 {}", margin + fee, margin, fee, account.getAvailableBalance());
-            recordRejected(ctx, bar, REASON_INSUFFICIENT_MARGIN, plan.getSourceId(),
-                    String.format("保证金不足：需 %s（保证金 %s + 手续费 %s），可用 %s，入场未执行",
-                            fmt(margin + fee), fmt(margin), fmt(fee), fmt(account.getAvailableBalance())), price);
-            return;
-        }
+        double amount = risk.amount();
+        double margin = risk.margin();
+        double fee = risk.fee();
 
         account.setAvailableBalance(account.getAvailableBalance() - margin - fee);
         account.setPosition(amount);
@@ -359,34 +456,19 @@ public class BacktestEngine {
         emitExecution(strategy, ctx, bar, type, side, price, amount, 0, account.getSourceId());
     }
 
-    /** 加仓：加权均价 + 累加保证金 + 三重校验 */
-    private void addPositionByPlan(Strategy strategy, StrategyContext ctx, Account account, Kline bar, TradePlan plan, List<Trade> trades) {
+    /** 通过风控校验后加仓，更新加权均价和累计保证金。 */
+    private void addPositionByPlan(Strategy strategy, StrategyContext ctx, Account account, Kline bar, TradePlan plan,
+                                    List<Trade> trades, RiskConfiguration limits) {
         double price = bar.getClose();
-        double base = calcSizingBase(account, plan, price);
-        double amount = calcAmount(base, plan, price);
-
-        if (!Double.isFinite(amount) || amount <= 0) {
-            log.warn("加仓数量非法 amount={}, 拒绝加仓", amount);
-            recordRejected(ctx, bar, REASON_INVALID_AMOUNT, account.getSourceId(),
-                    String.format("计算出的加仓数量非法 (%s)，加仓未执行", fmt(amount)), price);
+        PositionRisk.Assessment risk = PositionRisk.assess(account, plan, price, FEE_RATE, limits);
+        recordRiskEvaluation(ctx, bar, account, plan, risk, limits);
+        if (risk.rejection() != null) {
+            recordRiskRejection(ctx, bar, risk, account.getSourceId(), price, account.getAvailableBalance(), true);
             return;
         }
-        if (account.getAvailableBalance() <= 0) {
-            log.warn("可用保证金<=0, 拒绝加仓");
-            recordRejected(ctx, bar, REASON_NO_AVAILABLE_BALANCE, account.getSourceId(),
-                    "可用保证金不足，无法支付任何保证金与手续费，加仓未执行", price);
-            return;
-        }
-        double notional = amount * price;
-        double margin = notional / account.getLeverage();
-        double fee = notional * FEE_RATE;
-        if (account.getAvailableBalance() < margin + fee) {
-            log.warn("加仓保证金不足: 需 {}, 可用 {}", margin + fee, account.getAvailableBalance());
-            recordRejected(ctx, bar, REASON_INSUFFICIENT_MARGIN, account.getSourceId(),
-                    String.format("保证金不足：需 %s（保证金 %s + 手续费 %s），可用 %s，加仓未执行",
-                            fmt(margin + fee), fmt(margin), fmt(fee), fmt(account.getAvailableBalance())), price);
-            return;
-        }
+        double amount = risk.amount();
+        double margin = risk.margin();
+        double fee = risk.fee();
 
         // 加权均价
         double oldPos = account.getPosition();
@@ -414,7 +496,7 @@ public class BacktestEngine {
      * <p>逐仓语义：强平检查在主循环优先执行，此处未爆仓 → release > 0，不会让 availableBalance 变负。
      * release = positionMargin + realizedPnl - closeFee。
      *
-     * <p>平仓回报必须携带开仓时保存的 sourceId（清仓前取出），让执行事件能关联原始信号。
+     * <p>平仓回报必须携带开仓时保存的 sourceId（清仓前取出），使策略知道是哪一个区间的结果。
      */
     private void closePosition(Strategy strategy, StrategyContext ctx, Account account, Kline bar, double price, String type, List<Trade> trades) {
         PositionSide side = account.getPositionSide();   // 先取方向（clearPosition 会清空）
@@ -516,20 +598,62 @@ public class BacktestEngine {
              : 0.0;
     }
 
-    /** 计算仓位基数：CASH 用可用保证金，EQUITY 用权益 */
-    private double calcSizingBase(Account account, TradePlan plan, double price) {
-        if (plan.getSizingBase() == TradePlan.SizingBase.CASH) {
-            return account.getAvailableBalance();
+    /** 回放保留本次定仓预算、保护价格及准入结果，旧任务不新增事件。 */
+    private void recordRiskEvaluation(StrategyContext ctx, Kline bar, Account account, TradePlan plan,
+                                      PositionRisk.Assessment result, RiskConfiguration config) {
+        if (config == null) return;
+        var details = new java.util.HashMap<String, Object>(
+                Map.of("riskVersion", config.version(), "preset", config.preset().name(),
+                        "amount", result.amount(), "margin", result.margin(), "fee", result.fee(),
+                        "equity", account.getEquity(), "stopPrice", plan.getStopPrice(),
+                        "takeProfitPrice", plan.getTakeProfitPrice(),
+                        "decision", result.rejection() == null ? "APPROVED" : result.rejection().name()));
+        if (config.maxNotionalRatio() != null) details.put("maxNotionalRatio", config.maxNotionalRatio());
+        if (result.addRisk() != null) {
+            var evidence = result.addRisk();
+            details.put("existingStopRisk", evidence.existing());
+            details.put("additionalStopRisk", evidence.additional());
+            details.put("totalStopRisk", evidence.total());
+            details.put("stopRiskLimit", evidence.limit());
         }
-        return account.getEquity();
+        ctx.recordEvent(bar.getTime(), StrategyEvent.CATEGORY_DECISION, "RISK_EVALUATED", plan.getSourceId(),
+                account.getPositionSide(), bar.getClose(), "风控方案 " + config.preset() + "，候选数量 " + fmt(result.amount()),
+                details);
     }
 
-    /** 计算成交数量（按 SizingMode 分流） */
-    private double calcAmount(double base, TradePlan plan, double price) {
-        if (plan.getSizingMode() == TradePlan.SizingMode.RISK_PER_PRICE_UNIT) {
-            return base * plan.getRiskRate() / plan.getRiskDistance();
+    /** 把风控拒绝结果转换为已有的开仓或加仓回放事件。 */
+    private void recordRiskRejection(StrategyContext ctx, Kline bar, PositionRisk.Assessment risk,
+                                     String sourceId, double price, double available, boolean adding) {
+        String action = adding ? "加仓" : "入场";
+        String reasonCode;
+        String message;
+        switch (risk.rejection()) {
+            case INVALID_AMOUNT -> {
+                reasonCode = REASON_INVALID_AMOUNT;
+                message = String.format("计算出的%s数量非法 (%s)，%s未执行",
+                        adding ? "加仓" : "开仓", fmt(risk.amount()), action);
+            }
+            case NO_AVAILABLE_BALANCE -> {
+                reasonCode = REASON_NO_AVAILABLE_BALANCE;
+                message = "可用保证金不足，无法支付任何保证金与手续费，" + action + "未执行";
+            }
+            case INSUFFICIENT_MARGIN -> {
+                reasonCode = REASON_INSUFFICIENT_MARGIN;
+                message = String.format("保证金不足：需 %s（保证金 %s + 手续费 %s），可用 %s，%s未执行",
+                        fmt(risk.margin() + risk.fee()), fmt(risk.margin()), fmt(risk.fee()), fmt(available), action);
+            }
+            case MAX_NOTIONAL_EXPOSURE -> {
+                reasonCode = "MAX_NOTIONAL_EXPOSURE";
+                message = "成交后总名义仓位超过风控上限，" + action + "未执行";
+            }
+            case MAX_POSITION_RISK -> {
+                reasonCode = "MAX_POSITION_RISK";
+                message = "加仓后累计止损风险超过风控上限";
+            }
+            default -> throw new IllegalStateException("Unexpected risk rejection: " + risk.rejection());
         }
-        return base * plan.getPositionRatio() / price;
+        log.warn("{}", message);
+        recordRejected(ctx, bar, reasonCode, sourceId, message, price);
     }
 
     /** 构造交易记录（开仓/加仓用：账户当前方向即交易方向，来源取账户当前持仓来源） */

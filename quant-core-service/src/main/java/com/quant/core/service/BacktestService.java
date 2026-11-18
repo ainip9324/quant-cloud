@@ -10,6 +10,7 @@ import com.quant.core.dto.BacktestReplayResponse;
 import com.quant.core.dto.BacktestRequest;
 import com.quant.core.dto.BacktestTaskVO;
 import com.quant.core.entity.BacktestTaskDO;
+import com.quant.core.engine.SignalRunConfiguration;
 import com.quant.core.exception.BacktestServiceException;
 import com.quant.core.mapper.BacktestTaskMapper;
 import com.quant.core.mq.BacktestMessageProducer;
@@ -74,7 +75,9 @@ public class BacktestService {
 
         // 策略自行负责轻量提交参数校验，未知策略在写入任务前直接失败。
         Strategy strategy = strategyRegistry.require(request.getStrategyId());
-        strategy.validateParameters(request.getParams());
+        Map<String, Object> params = SignalRunConfiguration.prepare(
+                request.getParams(), request.getRiskConfig(), strategy, selection.interval());
+        strategy.validateParameters(params);
 
         // 构造任务实体
         BacktestTaskDO task = new BacktestTaskDO();
@@ -85,7 +88,7 @@ public class BacktestService {
         task.setEndTs(request.getEndTs());
         task.setBarLimit(barLimit);
         // params 序列化为 JSON 字符串存储
-        task.setParams(request.getParams() != null ? JSON.toJSONString(request.getParams()) : null);
+        task.setParams(params != null ? JSON.toJSONString(params) : null);
         task.setStatus(TaskStatus.WAITING.name());
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(LocalDateTime.now());

@@ -34,7 +34,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class TurtleStrategy implements Strategy {
+public class TurtleStrategy implements Strategy, SignalStrategy {
 
     /** 入场周期：突破过去 20 根K线的最高价 */
     private static final int ENTRY_PERIOD = 20;
@@ -56,6 +56,29 @@ public class TurtleStrategy implements Strategy {
 
     /** 止损 ATR 倍数（跌破 2 ATR 止损） */
     private static final double STOP_LOSS_ATR = 2.0;
+
+    @Override public String signalVersion() { return "turtle-signal-v1"; }
+
+    /** 通道决定开平仓，ATR 只决定加仓信号间距。保护价由独立风控负责。 */
+    @Override
+    public SignalDecision onSignal(StrategyContext ctx, Kline bar) {
+        if (ctx.size() <= ENTRY_PERIOD) return SignalDecision.of(TradeSignal.HOLD);
+        double close = bar.getClose();
+        PositionSide side = ctx.getPositionSide();
+        if (side == PositionSide.NONE) {
+            if (close > highestHigh(ctx.lookBack(ENTRY_PERIOD))) return SignalDecision.of(TradeSignal.OPEN_LONG);
+            if (close < lowestLow(ctx.lookBack(ENTRY_PERIOD))) return SignalDecision.of(TradeSignal.OPEN_SHORT);
+            return SignalDecision.of(TradeSignal.HOLD);
+        }
+        boolean longSide = side == PositionSide.LONG;
+        boolean exit = longSide ? close < lowestLow(ctx.lookBack(EXIT_PERIOD))
+                : close > highestHigh(ctx.lookBack(EXIT_PERIOD));
+        if (exit) return SignalDecision.of(TradeSignal.CLOSE);
+        double atr = IndicatorUtils.calcATR(ctx.history(), ATR_PERIOD);
+        double favorableMove = longSide ? close - ctx.getLastEntryPrice() : ctx.getLastEntryPrice() - close;
+        boolean add = atr > 0 && ctx.getEntryCount() < MAX_ADD_COUNT && favorableMove >= ADD_SPACING_ATR * atr;
+        return SignalDecision.of(add ? TradeSignal.ADD : TradeSignal.HOLD);
+    }
 
     @Override
     public String getId() {

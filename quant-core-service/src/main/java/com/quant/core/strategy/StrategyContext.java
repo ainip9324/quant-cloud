@@ -63,6 +63,9 @@ public class StrategyContext {
     /** 加权开仓均价 */
     public double getAvgEntryPrice() { return account != null ? account.getAvgEntryPrice() : 0; }
 
+    /** 当前持仓保护价，只读。 */
+    public double getStopPrice() { return account != null ? account.getStopPrice() : 0; }
+
     /** 开仓均价（兼容别名，等同 getAvgEntryPrice） */
     public double getEntryPrice() { return getAvgEntryPrice(); }
 

@@ -83,7 +83,7 @@ public class AiReportService {
         AiRequestContext request = AiRequestContext.authenticated(userId, qToken);
         BacktestSnapshot snapshot = core.getSnapshot(request, taskId);
         BacktestFacts facts = factsExtractor.extract(snapshot.task(), snapshot.replay());
-        String version = specifications.currentVersion(snapshot.task().strategyId());
+        String version = specifications.versionFor(snapshot.task().strategyId(), snapshot.task().params());
         Map<String, Object> specification = specifications.get(snapshot.task().strategyId(), version);
 
         // 2. 输入、提示词、Schema、策略规范及模型身份共同决定复用范围。

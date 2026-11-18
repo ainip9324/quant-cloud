@@ -1,6 +1,7 @@
 package com.quant.core.dto;
 
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.quant.core.engine.RiskConfiguration;
 import lombok.Data;
 
 import java.util.Map;
@@ -39,4 +40,7 @@ public class BacktestRequest {
 
     /** 策略参数（可选，透传给 StrategyContext） */
     private Map<String, Object> params;
+
+    /** 独立风控方案，服务端规范化后保存到任务执行快照。 */
+    private RiskConfiguration riskConfig;
 }

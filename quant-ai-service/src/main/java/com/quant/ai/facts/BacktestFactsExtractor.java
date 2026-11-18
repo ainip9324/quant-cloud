@@ -205,7 +205,8 @@ public class BacktestFactsExtractor {
     private List<Map<String, Object>> notableSequences(List<StrategyEventDto> events) {
         List<Map<String, Object>> notable = new ArrayList<>();
         for (StrategyEventDto event : events) {
-            if ("ENTRY_REJECTED".equals(event.code())) {
+            if (Set.of("ENTRY_REJECTED", "ENTRY_REJECTED_RR", "ENTRY_FILTERED_VOLATILITY",
+                    "EMA_RETEST_CANDIDATE", "EMA_EXIT_UNLOCKED", "EMA_EXIT_BLOCKED").contains(event.code())) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("sequence", event.sequence());
                 row.put("time", event.time());

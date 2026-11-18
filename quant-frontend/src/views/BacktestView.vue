@@ -41,6 +41,48 @@
       </el-form>
     </el-card>
 
+    <el-card v-if="usesIndependentRisk" style="margin-top: 20px;" data-testid="risk-config">
+      <template #header>风控方案</template>
+      <el-form :inline="true">
+        <el-form-item label="定仓方式">
+          <el-select v-model="riskForm.preset" @change="resetAllocation" style="width: 180px;" data-testid="risk-preset">
+            <el-option label="固定名义仓位比例" value="NOTIONAL_RATIO" />
+            <el-option label="按止损距离定仓" value="STOP_RISK" />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="riskForm.preset === 'STOP_RISK' ? '单笔风险比例' : '名义仓位比例'">
+          <el-input-number v-model="riskForm.allocation" :min="0.001" :max="riskForm.preset === 'STOP_RISK' ? 0.1 : 100"
+            :step="0.01" :precision="3" style="width: 140px;" />
+        </el-form-item>
+        <el-form-item v-if="form.strategyId === 'ema20'" label="ATR 周期">
+          <el-input-number v-model="emaAtr.period" :min="2" :max="500" :precision="0" style="width: 140px;" />
+        </el-form-item>
+        <el-form-item v-if="form.strategyId === 'ema20'" label="ATR 止损倍数">
+          <el-input-number v-model="emaAtr.multiplier" :min="0.1" :max="100" :step="0.5" style="width: 140px;" />
+        </el-form-item>
+        <el-form-item v-else label="止损比例">
+          <el-input-number v-model="form.risk.stopLossRatio" :min="0.001" :max="0.5" :step="0.005" :precision="3" style="width: 140px;" />
+        </el-form-item>
+        <el-form-item v-if="form.strategyId === 'ema20'" label="最低波动比">
+          <el-input-number v-model="emaRisk.minVolatilityRatio" :min="0" :max="1" :step="0.05" :precision="2" style="width: 140px;" />
+        </el-form-item>
+        <el-form-item label="盈亏比">
+          <el-input-number v-model="riskForm.rewardRiskRatio" :min="0.1" :max="100" :step="0.5" style="width: 120px;" />
+        </el-form-item>
+        <el-form-item v-if="form.strategyId !== 'ema20'" label="总名义仓位上限比例">
+          <el-input-number v-model="riskForm.maxNotionalRatio" :min="0.01" :max="100" :step="0.1" :precision="2" style="width: 140px;" />
+        </el-form-item>
+        <el-form-item v-if="form.strategyId === 'turtle'" label="加仓后累计止损风险上限">
+          <el-input-number v-model="maxPositionRiskRatio" :min="0.001" :max="1"
+            :step="0.01" :precision="3" style="width: 140px;" />
+        </el-form-item>
+      </el-form>
+      <p style="color: var(--qc-text-dim); font-size: 12px;">比例 0.01 表示 1%。收盘确认信号，下一根开盘执行。
+        <template v-if="form.strategyId === 'ema20'">波动比为当前 ATR(20) ÷ 此前 ATR(60)，低于设定值时跳过开仓。设为 0 关闭过滤。</template>
+        <template v-else>超出仓位上限时拒绝整笔交易。</template>
+      </p>
+    </el-card>
+
     <!-- 任务状态（提交/查询后展示） -->
     <el-card v-if="task.id" style="margin-top: 20px;">
       <template #header>
@@ -72,6 +114,11 @@
 
       <!-- 结果区（SUCCESS 时展示） -->
       <template v-if="task.result">
+        <el-alert v-if="taskRisk" :closable="false" type="info" style="margin-bottom: 16px;"
+          :title="`风控 v${taskRisk.version} · ${taskRisk.preset === 'STOP_RISK' ? '按止损距离定仓' : '固定名义仓位比例'} · 配置比例 ${taskRisk.allocation} · ${taskStopLabel} · 盈亏比 ${taskRisk.rewardRiskRatio}`" />
+        <p v-if="taskRisk && task.params?.execution?.strategyVersion === 'turtle-signal-v1'">
+          加仓后累计止损风险上限 {{ taskRisk.maxPositionRiskRatio * 100 }}%
+        </p>
         <!-- 结果指标（强化层级） -->
         <div class="qc-metrics">
           <div class="qc-metrics__grid">
@@ -172,10 +219,20 @@ const form = reactive({
   interval: '1h',
   limit: 500,
   leverage: 10,
-  initialCapital: 100000
+  initialCapital: 100000,
+  risk: { preset: 'STOP_RISK', allocation: 0.01, stopLossRatio: 0.02, rewardRiskRatio: 2, maxNotionalRatio: 1 }
 })
 
 const strategies = ref([])
+const usesIndependentRisk = computed(() => ['ema20', 'turtle'].includes(form.strategyId))
+const maxPositionRiskRatio = ref(0.05)
+const emaAtr = reactive({ period: 20, multiplier: 2 })
+const emaRisk = reactive({ preset: 'STOP_RISK', allocation: 0.01, rewardRiskRatio: 2, minVolatilityRatio: 0.6 })
+const riskForm = computed(() => form.strategyId === 'ema20' ? emaRisk : form.risk)
+/** 切换方案采用对应的起始比例，其余保护参数保持当前表单设置。 */
+function resetAllocation() {
+  riskForm.value.allocation = riskForm.value.preset === 'STOP_RISK' ? 0.01 : 0.1
+}
 const symbols = ref([])
 const intervals = computed(() => INTERVALS[form.marketType])
 const submitting = ref(false)
@@ -183,7 +240,18 @@ const polling = ref(false)
 const aiCreating = ref(false)
 
 // 当前任务（提交或查询后填充）
-const task = ref({ id: null, marketType: null, status: null, errorMsg: null, result: null })
+const task = ref({ id: null, marketType: null, status: null, errorMsg: null, result: null, params: null, strategyId: null })
+// 结果说明读取保存的任务配置，不跟随当前表单变化。
+const taskRisk = computed(() => task.value.params?.execution?.risk)
+const taskStopLabel = computed(() => {
+  const risk = taskRisk.value
+  if (!risk) return ''
+  if (risk.version === 3) {
+    const filter = risk.minVolatilityRatio === 0 ? '关闭波动过滤' : `最低波动比 ${risk.minVolatilityRatio}`
+    return `止损 ATR(${risk.atrPeriod}) × ${risk.atrMultiplier} · ${filter}`
+  }
+  return risk.version === 2 ? `止损 ATR(${risk.atrPeriod}) × ${risk.atrMultiplier}` : `止损比例 ${risk.stopLossRatio}`
+})
 
 const chartRef = ref(null)
 let chart = null
@@ -203,7 +271,7 @@ onMounted(async () => {
   }
 
   // 从策略页跳转过来：预选策略
-  if (strategies.value.some(strategy => strategy.id === route.query.strategyId)) {
+  if (route.query.strategyId) {
     form.strategyId = route.query.strategyId
   }
 
@@ -236,15 +304,15 @@ watch(() => route.query.id, (newId) => {
     stopPolling()
     chart?.dispose()
     chart = null
-    task.value = { id: null, marketType: null, status: null, errorMsg: null, result: null }
+    task.value = { id: null, marketType: null, status: null, errorMsg: null, result: null, params: null, strategyId: null }
     startPolling(Number(newId))
   }
 })
 
 /** 提交回测 */
 async function submit() {
-  if (!strategies.value.some(strategy => strategy.id === form.strategyId)) {
-    ElMessage.warning('请选择可用策略')
+  if (!form.strategyId) {
+    ElMessage.warning('请选择策略')
     return
   }
   submitting.value = true
@@ -252,11 +320,18 @@ async function submit() {
     // 重置上次结果
     chart?.dispose()
     chart = null
-    task.value = { id: null, marketType: null, status: null, errorMsg: null, result: null }
+    task.value = { id: null, marketType: null, status: null, errorMsg: null, result: null, params: null, strategyId: null }
 
     const params = {
       leverage: form.leverage,
       initialCapital: form.initialCapital
+    }
+
+    const riskConfig = {
+      ...(form.strategyId === 'ema20'
+        ? { ...emaRisk, atrPeriod: emaAtr.period, atrMultiplier: emaAtr.multiplier }
+        : form.risk),
+      ...(form.strategyId === 'turtle' ? { maxPositionRiskRatio: maxPositionRiskRatio.value } : {})
     }
     const res = await submitBacktest({
       marketType: form.marketType,
@@ -264,7 +339,8 @@ async function submit() {
       symbol: form.symbol,
       interval: form.interval,
       limit: form.limit,
-      params
+      params,
+      ...(usesIndependentRisk.value ? { riskConfig } : {})
     })
     ElMessage.success('回测任务已提交')
     startPolling(res.data.id)
@@ -302,6 +378,8 @@ async function fetchTask(id) {
     if (data.status === 'SUCCESS') {
       stopPolling()
       task.value.result = data.result
+      task.value.params = data.params
+      task.value.strategyId = data.strategyId
       await nextTick()
       renderEquityCurve(data.result.equityCurve)
     } else if (data.status === 'FAILED') {
@@ -328,6 +406,8 @@ async function generateAiReview() {
     aiCreating.value = false
   }
 }
+
+watch(colorTheme, theme => applyWorkspaceChartStyle(chart, theme))
 
 /** 渲染权益曲线，x 轴对应 K 线时间。 */
 function renderEquityCurve(equityCurve) {
@@ -503,3 +583,54 @@ function fmtEquity(row) {
   return row.equity.toFixed(2)
 }
 </script>
+
+<style scoped>
+.zone-row {
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--qc-border);
+}
+.zone-row:last-child {
+  border-bottom: none;
+}
+.zone-row__inputs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.zone-row__err {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--qc-up, #f56c6c);
+}
+.zone-row__preview {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12px;
+}
+.zone-row__preview-long {
+  color: var(--qc-down, #14b143);
+}
+.zone-row__preview-short {
+  color: var(--qc-up, #ef232a);
+}
+.zone-row__preview-arm {
+  display: block;
+  width: 100%;
+  color: var(--qc-text-dim, #94a3b8);
+}
+.zone-row__preview-flow {
+  display: block;
+  width: 100%;
+  color: var(--qc-text-dim, #94a3b8);
+}
+.zone-row__preview-note {
+  display: block;
+  width: 100%;
+  color: var(--qc-up, #ef232a);
+  font-size: 11px;
+  opacity: 0.85;
+}
+</style>
