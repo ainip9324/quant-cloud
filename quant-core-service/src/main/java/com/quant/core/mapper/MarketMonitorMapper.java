@@ -50,7 +50,7 @@ public interface MarketMonitorMapper {
     @Select("<script>SELECT e.*,r.lower_price,r.upper_price,r.effective_from,r.note FROM market_zone_event e "
             + "JOIN market_zone_revision r ON r.zone_id=e.zone_id AND r.revision=e.zone_revision "
             + "WHERE e.market_type=#{scope.marketType} AND e.symbol=#{scope.symbol} AND e.analysis_interval=#{scope.interval} "
-            + "<if test='zoneId != null'>AND e.zone_id=#{zoneId} </if>ORDER BY e.id DESC LIMIT #{size} OFFSET #{offset}</script>")
+            + "<if test='zoneId != null'>AND e.zone_id=#{zoneId} </if>ORDER BY e.market_time DESC, e.id DESC LIMIT #{size} OFFSET #{offset}</script>")
     List<ZoneEvent> selectEvents(@Param("scope") MonitorScope scope, @Param("zoneId") Long zoneId,
             @Param("size") int size, @Param("offset") int offset);
 }

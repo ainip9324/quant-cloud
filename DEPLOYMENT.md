@@ -32,6 +32,26 @@ SELECT username, role FROM users WHERE username = @admin_username;
 
 看到 `ADMIN` 后，在网页退出并重新登录，以获取带新角色的会话。用 API 手工验证时，登录令牌放在 `Q-Token` 请求头中。
 
+## 网页区域提醒
+
+新库随初始化 SQL 建好提醒的三张表。已有 MySQL 数据卷在获准的维护窗口先备份，再对目标 `quant_cloud` 执行 [网页提醒迁移](docker/migrations/zone-web-alerts.sql)。迁移只创建缺失的表，可重复执行。若使用 Bash，从部署目录执行。
+
+```sh
+docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot quant_cloud' < docker/migrations/zone-web-alerts.sql
+```
+
+在运行环境的 `.env` 设置 `ZONE_ALERTS_ENABLED=true`，并保持共享区域、实时观测和工作台开启。沿用当前 Compose 项目名、环境文件及覆盖文件，更新 Core、Gateway 和前端。
+
+```sh
+docker compose up -d --build --no-deps core-service gateway frontend
+```
+
+等待服务健康后，登录实时盘面，展开「区域提醒」订阅管理员启用的共享区间或通道。在「账号提醒设置」里开启提醒。在面板试听后，网页可在当前可见标签页为接近预警播放音效。用两个账号分别检查订阅及提醒记录，各账号应只看到自己的数据。关闭功能时，将 `ZONE_ALERTS_ENABLED` 设回 `false` 并重建 Core，已有订阅及记录可保留。
+
+网页提醒无需邮件。确需邮件时，沿用部署环境审核过的 SMTP 渠道，通过 `ZONE_ALERTS_MAIL_HOST`、`ZONE_ALERTS_MAIL_PORT`、`ZONE_ALERTS_MAIL_TLSMODE`（`STARTTLS` 或 `IMPLICIT_TLS`）、`ZONE_ALERTS_MAIL_FROM`、`ZONE_ALERTS_MAIL_USERNAME` 和 `ZONE_ALERTS_MAIL_PASSWORD` 配置。管理员可修改自己的收件地址。普通账号需要部署人员用 `zone-alerts.mail.recipients` 按 ID 预设收件地址。把凭据留在部署环境。
+
+安卓模拟提醒使用独立的覆盖文件 `docker/compose.android-synthetic-trial.yaml`、`ANDROID_SYNTHETIC_ENABLED` 和试用账号白名单。若当前部署已使用该覆盖文件，更新时继续带原有的 `-f` 参数及环境配置。网页提醒开关仅控制网页链路。
+
 ## 局域网访问
 
 默认 `QUANT_HTTP_BIND=127.0.0.1`。确实要在可信局域网内共享时，将 `.env` 中的绑定地址改为宿主机的局域网 IPv4 地址，重新执行 `docker compose up -d`，再从另一台设备访问该地址和端口。防火墙入站规则仅放行可信局域网。公网访问请另设 HTTPS 反向代理和访问控制，并验证实时盘面的 SSE 收帧与重连。

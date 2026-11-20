@@ -1,6 +1,6 @@
 <template>
-  <div ref="frame" class="chart-frame" :tabindex="editable ? 0 : undefined"
-    aria-label="K 线与交易区域" @keydown="editKey">
+  <div ref="frame" class="chart-frame" :tabindex="editable ? 0 : -1"
+    aria-label="K 线与交易区域" @keydown="editKey" @contextmenu.capture.prevent="openChartMenu">
     <div ref="element" class="market-chart" :class="{ drawing }"></div>
     <svg v-if="overlay" ref="editLayer" class="edit-layer" :style="{ clipPath: overlay.clip }" aria-hidden="true"
       @pointermove="moveEdit" @pointerup="finishEdit" @pointercancel="cancelEdit" @lostpointercapture="cancelEdit">
@@ -8,10 +8,14 @@
       <circle v-for="handle in overlay.handles" :key="handle.id" :cx="handle.x" :cy="handle.y" r="5"
         class="edit-handle" @pointerdown.stop="startEdit($event, handle.id)" />
     </svg>
+    <div v-if="chartMenu" ref="menuElement" class="chart-menu" :style="chartMenu"
+      @contextmenu.prevent.stop @keydown.esc.stop="closeChartMenu(true)">
+      <button type="button" @click="resetChart">重置图表</button>
+    </div>
   </div>
 </template>
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import { chartOption, FUTURE_AXIS_PERIODS, periodMillis } from '../utils/marketWorkspace.js'
 import { adjustZone, drawnZone } from '../utils/chartGeometry.js'
@@ -21,16 +25,28 @@ const props = defineProps({ snapshot: Object, draft: Object, drawing: Boolean, c
 const emit = defineEmits(['draw-range', 'cancel-drawing', 'select-zone', 'adjust-zone', 'archive-zone', 'cancel-edit'])
 const element = ref()
 const frame = ref(), editLayer = ref(), overlay = ref(null)
+const chartMenu = ref(null), menuElement = ref()
 let drag
 let chart, resize, renderedScope, renderedMarketEnd, outline, pointer
 let renderedTimeAxis
 let candleWidth
+let rightEdge
+let pan
+let panFrame
+let pendingRender = false
 let anchors = []
 
 function render() {
   if (!chart || drag) return
   const scope = props.snapshot ? [props.snapshot.marketType, props.snapshot.symbol, props.snapshot.interval].join('/') : null
   const changed = scope !== renderedScope
+  // 拖动只更新视窗，行情推送在松手后合并应用最新快照。
+  if (pan && !changed) {
+    pendingRender = true
+    return
+  }
+  if (changed) clearPan()
+  pendingRender = false
   if (changed) candleWidth = undefined
   const visibleRange = changed ? undefined : chart.getModel()?.getComponent('dataZoom')?.getValueRange('x', 0)
   const viewport = visibleRange && { startValue: visibleRange[0], endValue: visibleRange[1], marketEnd: renderedMarketEnd }
@@ -47,7 +63,107 @@ function render() {
   renderedTimeAxis = option.xAxis
   const period = periodMillis(props.snapshot?.interval)
   renderedMarketEnd = period && option.xAxis.max - FUTURE_AXIS_PERIODS * period
+  const candles = option.series[0].data
+  rightEdge = period && candles.length ? {
+    start: Math.max(option.xAxis.min, (candles.at(-2) ?? candles[0])[0] - period / 2),
+    last: candles.at(-1)[0],
+    padding: period / 2
+  } : null
+  onZoom()
+}
+
+function onZoom() {
+  if (rightEdge) {
+    const [start, end] = chart.getModel().getComponent('dataZoom').getValueRange('x', 0)
+    if (start > rightEdge.start) {
+      const width = Math.max(end - start, rightEdge.last + rightEdge.padding - rightEdge.start)
+      chart.dispatchAction({ type: 'dataZoom', startValue: rightEdge.start, endValue: rightEdge.start + width }, { silent: true })
+    }
+  }
+  // 拖动中滚轮仍由 ECharts 缩放。用缩放后的视窗继续拖动。
+  if (pan) {
+    const [start, end] = chart.getModel().getComponent('dataZoom').getValueRange('x', 0)
+    pan.start = start
+    pan.width = end - start
+  }
   updateViewport()
+}
+
+function startPan(event) {
+  const input = event.event
+  const primary = input?.which === 1 || input?.button === 0 || input?.zrByTouch
+  if (!rightEdge || !primary ||
+      !chart.containPixel({ gridIndex: 0 }, [event.offsetX, event.offsetY])) return
+  const [start, end] = chart.getModel().getComponent('dataZoom').getValueRange('x', 0)
+  const pixels = chart.getModel().getComponent('grid').coordinateSystem.getRect().width
+  if (pixels > 0) pan = { x: event.offsetX, start, width: end - start, pixels }
+}
+
+function movePan(event) {
+  if (!pan || event.gestureEvent === 'pinch') return
+  const start = pan.start + (pan.x - event.offsetX) * pan.width / pan.pixels
+  const width = start > rightEdge.start
+    ? Math.max(pan.width, rightEdge.last + rightEdge.padding - rightEdge.start)
+    : pan.width
+  const maxStart = Math.min(rightEdge.start, renderedTimeAxis.max - width)
+  const bounded = Math.max(renderedTimeAxis.min, Math.min(maxStart, start))
+  pan.x = event.offsetX
+  if (pan.start === bounded && pan.width === width) return
+  pan.start = bounded
+  pan.width = width
+  if (panFrame == null) panFrame = window.requestAnimationFrame(applyPan)
+}
+
+function applyPan() {
+  panFrame = undefined
+  const [start, end] = chart.getModel().getComponent('dataZoom').getValueRange('x', 0)
+  const startValue = Math.round(pan.start), endValue = Math.round(pan.start + pan.width)
+  if (startValue === start && endValue === end) return
+  chart.dispatchAction({ type: 'dataZoom', startValue, endValue }, { silent: true })
+  updateViewport()
+}
+
+function clearPan() {
+  if (panFrame != null) window.cancelAnimationFrame(panFrame)
+  panFrame = undefined
+  pan = undefined
+}
+
+function finishPan() {
+  if (panFrame != null) {
+    window.cancelAnimationFrame(panFrame)
+    applyPan()
+  }
+  clearPan()
+  if (pendingRender) render()
+}
+
+async function openChartMenu(event) {
+  if (drag) return
+  const bounds = frame.value.getBoundingClientRect()
+  chartMenu.value = { left: '0px', top: '0px' }
+  await nextTick()
+  if (!menuElement.value) return
+  chartMenu.value = {
+    left: `${Math.max(0, Math.min(event.clientX - bounds.left, bounds.width - menuElement.value.offsetWidth))}px`,
+    top: `${Math.max(0, Math.min(event.clientY - bounds.top, bounds.height - menuElement.value.offsetHeight))}px`
+  }
+  menuElement.value.querySelector('button').focus({ preventScroll: true })
+}
+
+function closeChartMenu(restoreFocus = false) {
+  chartMenu.value = null
+  if (restoreFocus) frame.value.focus({ preventScroll: true })
+}
+
+function dismissChartMenu(event) {
+  if (chartMenu.value && !menuElement.value?.contains(event.target)) closeChartMenu()
+}
+
+function resetChart() {
+  const { start, end, startValue, endValue } = chartOption(props.snapshot, null).dataZoom[0]
+  chart.dispatchAction({ type: 'dataZoom', start, end, startValue, endValue })
+  closeChartMenu(true)
 }
 
 /** 时间轴上的一根 K 线占一个周期，未来空白不改变它的宽度。 */
@@ -69,7 +185,7 @@ function updateViewport() {
 
 /** 将时间与价位投影成可编辑的图形。无失效时间的区域只提供左侧控制点。 */
 function zonePoints(zone) {
-  const until = zone.effectiveUntil ?? chart.getOption().dataZoom[0].endValue
+  const until = zone.effectiveUntil ?? chart.getModel().getComponent('dataZoom').getValueRange('x', 0)[1]
   const lower = Number(zone.lowerPrice), upper = Number(zone.upperPrice)
   const endLower = Number(zone.endLowerPrice ?? lower)
   return [[zone.effectiveFrom, lower], [zone.effectiveFrom, upper],
@@ -261,13 +377,21 @@ onMounted(() => {
   canvas.on('click', selectBoundary)
   canvas.on('click', selectSavedZone)
   canvas.on('mousemove', movePointer)
+  canvas.on('mousemove', movePan)
   canvas.on('globalout', leavePlot)
-  chart.on('datazoom', updateViewport)
+  canvas.on('mousedown', startPan)
+  canvas.on('mouseup', finishPan)
+  chart.on('datazoom', onZoom)
+  window.addEventListener('mouseup', finishPan)
+  window.addEventListener('pointercancel', finishPan)
+  window.addEventListener('blur', finishPan)
+  window.addEventListener('pointerdown', dismissChartMenu, true)
   window.addEventListener('keydown', cancelOnEscape)
   if (typeof ResizeObserver !== 'undefined') { resize = new ResizeObserver(onResize); resize.observe(element.value) }
   else window.addEventListener('resize', onResize)
 })
 function onResize() {
+  if (pan) finishPan()
   chart?.resize()
   if (chart) updateViewport()
 }
@@ -275,8 +399,13 @@ watch(() => [props.snapshot, props.draft, colorTheme.value, props.showEma], rend
 watch(() => [props.drawing, props.channel], clearDrawing)
 watch(() => [props.editable, props.selectedId, props.drawing], () => { cancelEdit(); render() })
 onBeforeUnmount(() => {
+  clearPan()
   resize?.disconnect()
   window.removeEventListener('resize', onResize)
+  window.removeEventListener('mouseup', finishPan)
+  window.removeEventListener('pointercancel', finishPan)
+  window.removeEventListener('blur', finishPan)
+  window.removeEventListener('pointerdown', dismissChartMenu, true)
   window.removeEventListener('keydown', cancelOnEscape)
   chart?.dispose()
   chart = null
@@ -290,6 +419,11 @@ onBeforeUnmount(() => {
 .edit-shape { fill: #38bdf81a; stroke: #38bdf8; stroke-width: 2; cursor: move; }
 .edit-handle { fill: white; stroke: #0284c7; stroke-width: 2; cursor: grab; }
 .market-chart { width: 100%; min-width: 0; height: 440px; }
+.chart-menu { position: absolute; z-index: 2; padding: 4px; border: 1px solid var(--qc-control-border);
+  border-radius: 8px; background: var(--qc-surface); box-shadow: var(--qc-shadow); }
+.chart-menu button { display: block; border: 0; border-radius: 4px; padding: 8px 14px;
+  color: var(--qc-text); background: transparent; cursor: pointer; white-space: nowrap; }
+.chart-menu button:is(:hover, :focus-visible) { background: var(--qc-accent-soft); }
 .market-chart.drawing, .market-chart.drawing :deep(div), .market-chart.drawing :deep(canvas) { cursor: crosshair !important; }
 @media (max-width: 600px) { .market-chart { height: 340px; } }
 </style>

@@ -15,6 +15,10 @@
     <description>核心服务 - 策略引擎 + 回测引擎</description>
 
     <dependencies>
+        <dependency>
+            <groupId>org.eclipse.angus</groupId>
+            <artifactId>jakarta.mail</artifactId>
+        </dependency>
         <!-- 内部模块 -->
         <dependency>
             <groupId>com.quant</groupId>

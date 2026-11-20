@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Order(Ordered.HIGHEST_PRECEDENCE)
-@RestControllerAdvice(assignableTypes = MarketMonitorController.class)
+@RestControllerAdvice(assignableTypes = {MarketMonitorController.class, ZoneAlertController.class})
 public class MarketMonitorExceptionHandler {
     @ExceptionHandler(MarketMonitorException.class)
     public ResponseEntity<Map<String, String>> monitor(MarketMonitorException exception) {

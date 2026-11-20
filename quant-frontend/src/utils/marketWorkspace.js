@@ -129,8 +129,9 @@ export function chartOption(snapshot, draft, viewport, theme = 'dark', showEma =
       max: range => Number.isFinite(range.max) ? null : high + pricePadding },
     // 通道横跨多个时间坐标，局部进入视图时保留整条数据，再由绘图区裁剪。
     // 未提交的滚轮范围会在行情重绘时丢失，先同步应用手势再处理推送。
-    dataZoom: [{ type: 'inside', throttle: 0, filterMode: 'weakFilter', ...zoom },
-      { ...slider, type: 'slider', throttle: 0, filterMode: 'weakFilter', ...zoom, bottom: 10, height: 20 }],
+    dataZoom: [{ type: 'inside', moveOnMouseMove: false, throttle: 0, filterMode: 'weakFilter', minValueSpan: 2 * period, ...zoom },
+      { ...slider, type: 'slider', throttle: 0, filterMode: 'weakFilter', minValueSpan: 2 * period,
+        ...zoom, bottom: 10, height: 20 }],
     series: [{ id: 'workspace-candles', name: 'K 线', type: 'candlestick', data: candles, encode: { x: 0, y: [1, 2, 3, 4] },
       itemStyle: { color: '#22c55e', color0: '#ef4444', borderColor: '#22c55e', borderColor0: '#ef4444' },
       markArea: { silent: true, data: areas } },

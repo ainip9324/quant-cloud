@@ -91,6 +91,9 @@ android-synthetic:
   allowed-user-ids: "${ANDROID_SYNTHETIC_ALLOWED_USER_IDS:}"
   max-connections: ${ANDROID_SYNTHETIC_MAX_CONNECTIONS:2}
 
+zone-alerts:
+  enabled: ${ZONE_ALERTS_ENABLED:false}
+
 logging:
   level:
     com.quant: info

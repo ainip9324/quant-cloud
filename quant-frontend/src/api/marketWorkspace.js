@@ -4,6 +4,9 @@ import { WORKSPACE_CANDLE_LIMIT } from '../utils/marketWorkspaceLimits.js'
 const ROOT = '/core/market-workspace'
 const BRIEFING = '/core/market-briefing'
 export async function getWorkspace(scope, signal) { return (await api.get(ROOT, { params: scope, signal })).data }
+export async function getZoneEvents(scope, page, signal) {
+  return (await api.get('/core/market-zone-events', { params: { ...scope, page, size: 10 }, signal })).data
+}
 export async function getMarketBriefing(signal) {
   return (await api.get(BRIEFING, { signal })).data
 }

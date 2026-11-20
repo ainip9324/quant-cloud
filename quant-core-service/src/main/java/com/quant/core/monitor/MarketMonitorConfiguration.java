@@ -25,9 +25,12 @@ import org.springframework.transaction.PlatformTransactionManager;
 public class MarketMonitorConfiguration {
     @Bean ZoneMonitoringService zoneMonitoringService(MarketZoneMapper zones, MarketMonitorMapper mapper,
             PlatformTransactionManager transactions, MarketMonitorProperties properties,
+            org.springframework.beans.factory.ObjectProvider<ZoneAlerts> alerts,
             @Value("${market-zones.enabled:false}") boolean zonesEnabled) {
         if (!zonesEnabled) throw new IllegalStateException("Market monitoring requires enabled market zones");
-        return new ZoneMonitoringService(zones, mapper, transactions, properties);
+        ZoneMonitoringService service = new ZoneMonitoringService(zones, mapper, transactions, properties);
+        service.onApproach(alerts.getIfAvailable());
+        return service;
     }
     @Bean RedisLiveMarketSource redisLiveMarketSource(StringRedisTemplate redis, ObjectMapper json) {
         return new RedisLiveMarketSource(redis, json);

@@ -13,6 +13,9 @@
       <div class="connection" :class="{ live: effectiveStatus === 'LIVE' }" role="status"><span class="dot"></span>{{ STATUS_LABELS[effectiveStatus] }}</div>
       <button @click="restart" :disabled="saving">重新加载</button>
     </div>
+    <ZoneAlertPanel v-if="account?.id" :key="account.id" :user-id="account.id" :zones="snapshot?.zones || []">
+      <ZoneAlertSettings />
+    </ZoneAlertPanel>
     <p v-if="connection.state === 'UNAVAILABLE'" class="notice" role="alert">实时盘面尚未启用或暂时不可用，将自动重试。历史图和旧状态不代表当前行情。</p>
     <p v-else-if="effectiveStatus !== 'LIVE'" class="notice" role="status">{{ snapshot ? '当前数据未处于实时状态。保留最后图形供参考，区域角色暂不作为当前观察。' : '正在加载盘面…' }}</p>
     <p v-if="snapshot?.historyStatus !== 'READY' && snapshot" class="notice">{{ snapshot.historyStatus === 'STALE' ? '历史 K 线尚未补齐，已保留最近可用数据。' : '历史 K 线暂不可用，正在重试。' }}</p>
@@ -59,7 +62,7 @@
         <p v-if="!snapshot?.zones.length" class="empty">{{ isAdmin ? '尚无区域，可在图表上绘制。' : '管理员尚未设置共享区域。' }}</p>
         <article v-for="zone in snapshot?.zones || []" :key="zone.id" class="zone-card">
           <div class="zone-heading"><strong>#{{ zone.id }} <small>v{{ zone.revision }} · {{ zone.endLowerPrice != null ? '平行通道' : '水平区间' }}</small></strong><span class="zone-state">{{ zone.lifecycle === 'DISABLED' ? '已停用' : expired(zone) ? '已失效' : current(zone) ? STATE_LABELS[zone.observation.state] : '待观察' }}</span></div>
-          <p class="price-range">{{ zone.lowerPrice }} — {{ zone.upperPrice }}</p>
+          <p class="price-range">{{ zonePrice.format(zone.lowerPrice) }} — {{ zonePrice.format(zone.upperPrice) }}</p>
           <p class="muted">{{ current(zone) ? ROLE_LABELS[zone.observation.role] : '暂无当前角色' }} · 生效 {{ time(zone.effectiveFrom) }}</p>
           <p class="muted">失效 {{ zone.effectiveUntil ? time(zone.effectiveUntil) : '向右延伸' }}<span v-if="zone.endLowerPrice != null"> · 终点下沿 {{ zone.endLowerPrice }}</span></p>
           <p v-if="zone.note" class="zone-note">{{ zone.note }}</p>
@@ -91,11 +94,18 @@
     <MarketBriefingPanel :can-edit="isAdmin" />
 
     <section class="panel events-panel">
-      <div class="panel-heading"><h2>区域事件 <small>最近 20 条</small></h2><span class="muted">按已观察到的状态变化记录</span></div>
-      <p v-if="!snapshot?.events.length" class="empty">暂无状态变化事件。首次观察、断线恢复及修改区域会建立基线，不记录穿越事件。</p>
-      <ol class="timeline"><li v-for="event in snapshot?.events || []" :key="event.id">
+      <div class="panel-heading"><h2>区域事件</h2><span class="muted">最新事件优先 · 每页 10 条</span></div>
+      <p v-if="eventError" role="alert">{{ eventError }} <button @click="loadEvents()">重试</button></p>
+      <p v-else-if="eventsLoading && !events" role="status">正在加载区域事件…</p>
+      <p v-else-if="events?.total === 0" class="empty">暂无状态变化事件。首次观察、断线恢复及修改区域会建立基线，不记录穿越事件。</p>
+      <ol class="timeline"><li v-for="event in events?.records || []" :key="event.id">
         <time>{{ time(event.marketTime) }}</time><div><strong>#{{ event.zoneId }} · v{{ event.zoneRevision }}</strong><p>{{ STATE_LABELS[event.fromState] || event.fromState }} → {{ STATE_LABELS[event.toState] || event.toState }} <span class="muted">@ {{ event.observedPrice }}</span></p><small class="muted">当时区域 {{ event.lowerPrice }} — {{ event.upperPrice }}<span v-if="event.note"> · {{ event.note }}</span></small></div>
       </li></ol>
+      <div v-if="events?.total > 0" class="zone-actions" aria-label="区域事件分页">
+        <button :disabled="eventsLoading || eventPage === 1" @click="goToEventPage(eventPage - 1)">上一页</button>
+        <span>第 {{ eventPage }} / {{ eventPages }} 页</span>
+        <button :disabled="eventsLoading || eventPage >= eventPages" @click="goToEventPage(eventPage + 1)">下一页</button>
+      </div>
     </section>
     <p v-if="message" class="feedback" role="alert" data-testid="feedback">{{ message }}</p>
   </section>
@@ -105,20 +115,58 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MarketWorkspaceChart from '../components/MarketWorkspaceChart.vue'
 import ChartIndicators from '../components/ChartIndicators.vue'
+import ZoneAlertPanel from '../components/ZoneAlertPanel.vue'
+import ZoneAlertSettings from '../components/ZoneAlertSettings.vue'
 import MarketBriefingPanel from '../components/MarketBriefingPanel.vue'
 import { getMe } from '../api/core.js'
-import { changeZoneLifecycle, connectWorkspace, createZone, getWorkspace, updateZone } from '../api/marketWorkspace.js'
+import { changeZoneLifecycle, connectWorkspace, createZone, getWorkspace, getZoneEvents, updateZone } from '../api/marketWorkspace.js'
 import { INTERVALS } from '../utils/marketOptions.js'
 import { WORKSPACE_CANDLE_LIMIT } from '../utils/marketWorkspaceLimits.js'
+import { workspaceSelections } from '../utils/workspaceSelections.js'
 import { localDateTime, ROLE_LABELS, STATE_LABELS, STATUS_LABELS, workspaceStatus, zoneCommand } from '../utils/marketWorkspace.js'
 
-const symbol = ref('BTCUSDT'), interval = ref('1h'), snapshot = ref(null), account = ref(null)
+const previous = workspaceSelections.market
+const symbol = ref(previous?.symbol ?? 'BTCUSDT'), interval = ref(previous?.interval ?? '1h')
+const snapshot = ref(null), account = ref(null)
 const connection = ref({ state: 'CONNECTING' }), receivedAt = ref(0), now = ref(Date.now())
 const draft = ref(null), saving = ref(false), conflict = ref(false), archiveId = ref(null), message = ref(''), showAccount = ref(false)
 const drawing = ref(false), zoneForm = ref(null)
-const drawChannel = ref(false)
-const showEma = ref(false)
+const drawChannel = ref(previous?.drawChannel ?? false)
+const showEma = ref(previous?.showEma ?? false)
 const scope = computed(() => ({ marketType: 'USDT_FUTURES', symbol: symbol.value, interval: interval.value }))
+const zonePrice = new Intl.NumberFormat('en-US', { useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const events = ref(null)
+const eventPage = ref(1)
+const eventsLoading = ref(false)
+const eventError = ref('')
+const eventPages = computed(() => Math.max(1, Math.ceil((events.value?.total ?? 0) / 10)))
+let eventRequest
+
+async function loadEvents() {
+  eventRequest?.abort()
+  const request = new AbortController()
+  eventRequest = request
+  eventsLoading.value = true
+  eventError.value = ''
+  try {
+    const data = await getZoneEvents(scope.value, eventPage.value, request.signal)
+    if (request.signal.aborted) return
+    if (eventPage.value > Math.max(1, Math.ceil(data.total / 10))) {
+      await goToEventPage(1)
+      return
+    }
+    events.value = data
+  } catch {
+    if (!request.signal.aborted) eventError.value = '无法加载区域事件。'
+  } finally {
+    if (eventRequest === request) eventsLoading.value = false
+  }
+}
+
+function goToEventPage(page) {
+  eventPage.value = page
+  return loadEvents()
+}
 const isAdmin = computed(() => account.value?.role === 'ADMIN')
 const canDraw = computed(() => isAdmin.value && !saving.value && !conflict.value &&
   Boolean(snapshot.value?.candles.length || snapshot.value?.currentCandle))
@@ -256,12 +304,25 @@ async function lifecycle(zone, action) {
   finally { saving.value = false }
 }
 watch(canDraw, allowed => { if (!allowed) drawing.value = false })
-watch([symbol, interval], () => { snapshot.value = null; draft.value = null; conflict.value = false; archiveId.value = null; message.value = ''; restart() })
+watch([symbol, interval], () => {
+  snapshot.value = null; draft.value = null; conflict.value = false; archiveId.value = null; message.value = ''
+  events.value = null
+  restart()
+  goToEventPage(1)
+})
+watch(() => snapshot.value?.events[0]?.id, (id, previousId) => {
+  if (id != null && id !== previousId && eventPage.value === 1) loadEvents()
+})
 onMounted(async () => {
+  loadEvents()
   restart(); clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
   try { const response = await getMe(); if (!disposed) account.value = response.data } catch { /* Existing session interceptor handles 401/403. */ }
 })
-onBeforeUnmount(() => { disposed = true; generation++; client?.close(); refreshController?.abort(); clearInterval(clockTimer) })
+onBeforeUnmount(() => {
+  eventRequest?.abort()
+  workspaceSelections.market = { symbol: symbol.value, interval: interval.value, drawChannel: drawChannel.value, showEma: showEma.value }
+  disposed = true; generation++; client?.close(); refreshController?.abort(); clearInterval(clockTimer)
+})
 </script>
 
 <style scoped>

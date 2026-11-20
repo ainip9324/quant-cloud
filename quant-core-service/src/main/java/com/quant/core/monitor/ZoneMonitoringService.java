@@ -29,7 +29,14 @@ public class ZoneMonitoringService {
     private final TransactionTemplate writes;
     private final Set<String> configured;
     private final Set<String> ready = ConcurrentHashMap.newKeySet();
+    private final Map<String, Map<ApproachSide, Long>> disarmedByScope = new ConcurrentHashMap<>();
+    private static final long NOT_FAR = -1;
+    private static final long REARM_MILLIS = 3_000;
+    private record ApproachSide(long zoneId, long revision, ObservationState outside) {}
     private volatile boolean stopped;
+    private ZoneAlerts alerts;
+
+    void onApproach(ZoneAlerts alerts) { this.alerts = alerts; }
 
     public ZoneMonitoringService(MarketZoneMapper zones, MarketMonitorMapper mapper, PlatformTransactionManager transactions,
                                   MarketMonitorProperties properties) {
@@ -58,16 +65,21 @@ public class ZoneMonitoringService {
         if (!LiveSnapshotPolicy.valid(scope, snapshot, clock, properties.getStaleMillis())) { unavailable(scope); return; }
         boolean baseline = !ready.contains(scope.key());
         try {
-            boolean accepted = Boolean.TRUE.equals(writes.execute(transaction -> process(scope, snapshot, baseline)));
+            Map<ApproachSide, Long> nextDisarmed = new HashMap<>();
+            boolean accepted = Boolean.TRUE.equals(writes.execute(transaction -> process(scope, snapshot, baseline, nextDisarmed)));
             // execute returns only after commit, including when callers already have a transaction.
-            if (accepted) ready.add(scope.key()); else ready.remove(scope.key());
+            if (accepted) {
+                if (alerts != null) disarmedByScope.put(scope.key(), nextDisarmed);
+                ready.add(scope.key());
+            } else ready.remove(scope.key());
         } catch (RuntimeException exception) {
             ready.remove(scope.key());
             throw exception;
         }
     }
 
-    private boolean process(MonitorScope scope, LiveMarketSnapshot snapshot, boolean baseline) {
+    private boolean process(MonitorScope scope, LiveMarketSnapshot snapshot, boolean baseline,
+                            Map<ApproachSide, Long> nextDisarmed) {
         lockScope(scope);
         MonitorCursor previous = mapper.selectCursorForUpdate(scope);
         if (previous != null && previous.getPriceTime() != null) {
@@ -91,6 +103,7 @@ public class ZoneMonitoringService {
         List<MarketZoneRow> definitions = zones.selectReservedForUpdate(scope.marketType(), scope.symbol(), scope.interval());
         Map<Long, ZoneObservationRow> observed = new HashMap<>();
         mapper.selectObservations(scope).forEach(row -> observed.put(row.getZoneId(), row));
+        Map<ApproachSide, Long> disarmed = disarmedByScope.getOrDefault(scope.key(), Map.of());
         long now = clock.millis();
         for (MarketZoneRow zone : definitions) {
             if (!zone.isObservableAt(snapshot.priceTime())
@@ -100,11 +113,20 @@ public class ZoneMonitoringService {
             BigDecimal lower = zone.lowerPriceAt(snapshot.priceTime());
             BigDecimal upper = lower.add(zone.getUpperPrice().subtract(zone.getLowerPrice()));
             ObservationState next = ObservationState.at(snapshot.lastPrice(), lower, upper);
-            if (!initialize && (!newPriceTime || old.getState() == next)) continue;
-            if (!initialize) {
-                ZoneEvent event = event(scope, zone, old.getState(), next, snapshot, now);
-                if (mapper.insertEvent(event) != 1) throw new IllegalStateException("State event was not persisted");
+            boolean transition = !initialize && newPriceTime && old.getState() != next;
+            if (transition && mapper.insertEvent(event(scope, zone, old.getState(), next, snapshot, now)) != 1) {
+                throw new IllegalStateException("State event was not persisted");
             }
+            if (alerts != null) {
+                BigDecimal rearmDistance = upper.subtract(lower).multiply(BigDecimal.valueOf(2));
+                trackApproach(zone, ObservationState.ABOVE, ObservationState.APPROACHING_FROM_ABOVE,
+                        snapshot.lastPrice().compareTo(upper.add(rearmDistance)) >= 0, snapshot.priceTime(),
+                        transition ? old.getState() : null, next, initialize, newPriceTime, disarmed, nextDisarmed);
+                trackApproach(zone, ObservationState.BELOW, ObservationState.APPROACHING_FROM_BELOW,
+                        snapshot.lastPrice().compareTo(lower.subtract(rearmDistance)) <= 0, snapshot.priceTime(),
+                        transition ? old.getState() : null, next, initialize, newPriceTime, disarmed, nextDisarmed);
+            }
+            if (!initialize && !transition) continue;
             ZoneObservationRow row = new ZoneObservationRow();
             row.setZoneId(zone.getId()); row.setZoneRevision(zone.getRevision()); row.setState(next);
             row.setStatePrice(snapshot.lastPrice()); row.setStateMarketTime(snapshot.priceTime());
@@ -118,6 +140,27 @@ public class ZoneMonitoringService {
         cursor.setStatus(Status.LIVE); cursor.setBaselineRequired(false); cursor.setRecordedAt(now);
         mapper.saveCursor(cursor);
         return true;
+    }
+
+    private void trackApproach(MarketZoneRow zone, ObservationState outside, ObservationState near, boolean far,
+                               long marketTime, ObservationState previous, ObservationState current,
+                               boolean baseline, boolean newPriceTime, Map<ApproachSide, Long> disarmed,
+                               Map<ApproachSide, Long> nextDisarmed) {
+        var side = new ApproachSide(zone.getId(), zone.getRevision(), outside);
+        Long farSince = disarmed.get(side);
+        if (farSince == null) {
+            if (previous == outside && current == near) {
+                alerts.approach(zone, previous, current, marketTime);
+                nextDisarmed.put(side, NOT_FAR);
+            }
+            return;
+        }
+        if (baseline || newPriceTime) {
+            if (!far) farSince = NOT_FAR;
+            else if (baseline || farSince == NOT_FAR) farSince = marketTime;
+            else if (marketTime - farSince >= REARM_MILLIS) return;
+        }
+        nextDisarmed.put(side, farSince);
     }
 
     public void unavailable(MonitorScope scope) { unavailable(scope, Status.DEGRADED); }
