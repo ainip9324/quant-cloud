@@ -18,6 +18,13 @@ spring:
             - Method=GET
           metadata:
             response-timeout: -1
+        - id: android-synthetic-stream
+          uri: lb://quant-core-service
+          predicates:
+            - Path=/api/core/zone-alerts/android/stream
+            - Method=GET
+          metadata:
+            response-timeout: -1
         - id: data-service
           uri: lb://quant-data-service
           predicates:

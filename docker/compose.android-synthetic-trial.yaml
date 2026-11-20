@@ -1,0 +1,13 @@
+services:
+  core-service:
+    environment:
+      ANDROID_SYNTHETIC_ENABLED: "${ANDROID_SYNTHETIC_ENABLED:-false}"
+      ANDROID_SYNTHETIC_ALLOWED_USER_IDS: "${ANDROID_SYNTHETIC_ALLOWED_USER_IDS:-}"
+      ANDROID_SYNTHETIC_MAX_CONNECTIONS: "${ANDROID_SYNTHETIC_MAX_CONNECTIONS:-2}"
+    volumes:
+      - type: bind
+        source: ${ANDROID_SYNTHETIC_EVENT_DIR:?Set ANDROID_SYNTHETIC_EVENT_DIR to the operator-owned event directory}
+        target: /run/quant-android-synthetic
+        read_only: true
+        bind:
+          create_host_path: false

@@ -86,6 +86,11 @@ market-monitor:
 market-workspace:
   enabled: ${MARKET_WORKSPACE_ENABLED:false}
 
+android-synthetic:
+  enabled: ${ANDROID_SYNTHETIC_ENABLED:false}
+  allowed-user-ids: "${ANDROID_SYNTHETIC_ALLOWED_USER_IDS:}"
+  max-connections: ${ANDROID_SYNTHETIC_MAX_CONNECTIONS:2}
+
 logging:
   level:
     com.quant: info
