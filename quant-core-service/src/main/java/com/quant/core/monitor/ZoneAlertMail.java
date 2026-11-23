@@ -80,7 +80,7 @@ class ZoneAlertMail {
 
     String sendTo(String recipient, ZoneAlerts.Notice notice) {
         if (!smtpConfigured() || recipient == null) return "SKIPPED";
-        String title = "接近预警";
+        String title = "APPROACH".equals(notice.kind()) ? "接近预警" : "收盘形态确认";
         String direction = "LONG".equals(notice.direction()) ? "做多方向" : "做空方向";
         String stage = "message preparation";
         boolean accepted = false;

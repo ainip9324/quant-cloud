@@ -60,7 +60,7 @@
         <el-form-item v-if="form.strategyId === 'ema20'" label="ATR 止损倍数">
           <el-input-number v-model="emaAtr.multiplier" :min="0.1" :max="100" :step="0.5" style="width: 140px;" />
         </el-form-item>
-        <el-form-item v-else label="止损比例">
+        <el-form-item v-else-if="form.strategyId === 'turtle'" label="止损比例">
           <el-input-number v-model="form.risk.stopLossRatio" :min="0.001" :max="0.5" :step="0.005" :precision="3" style="width: 140px;" />
         </el-form-item>
         <el-form-item v-if="form.strategyId === 'ema20'" label="最低波动比">
@@ -79,8 +79,23 @@
       </el-form>
       <p style="color: var(--qc-text-dim); font-size: 12px;">比例 0.01 表示 1%。收盘确认信号，下一根开盘执行。
         <template v-if="form.strategyId === 'ema20'">波动比为当前 ATR(20) ÷ 此前 ATR(60)，低于设定值时跳过开仓。设为 0 关闭过滤。</template>
-        <template v-else>超出仓位上限时拒绝整笔交易。</template>
+        <template v-else>
+          <template v-if="form.strategyId === 'zone-reversal'">R 为区间宽度，做多止损在下沿下方 2R，做空在上沿上方 2R。</template>
+          超出仓位上限时拒绝整笔交易。
+        </template>
       </p>
+    </el-card>
+
+    <el-card v-if="form.strategyId === 'zone-reversal'" style="margin-top: 20px;" data-testid="chart-object-picker">
+      <template #header>选择共享区域或平行通道</template>
+      <el-select v-model="form.chartObjectIds" multiple :multiple-limit="20" :loading="objectsLoading"
+        placeholder="选择实时盘面已保存的区域" style="width: 100%;" data-testid="chart-object-select">
+        <el-option v-for="zone in chartObjects" :key="zone.id" :value="zone.id"
+          :label="`#${zone.id} · ${zone.endLowerPrice == null ? '水平区域' : '平行通道'} · ${zone.lowerPrice}—${zone.upperPrice} · ${zone.lifecycle} · ${zone.note || '无备注'}`" />
+      </el-select>
+      <el-button link @click="loadChartObjects()" :loading="objectsLoading">刷新区域</el-button>
+      <p style="color: var(--qc-text-dim); font-size: 12px;">最多选择 20 个（含停用，不含归档，每种状态最多 100 个）。按提交时最新图形定义的生效/失效时间回测，不受创建时间限制；允许事后绘图检验历史，结果不代表当时已知。通道到绘制结束时间失效，触及按收盘边界与本根高低价近似判断，非逐笔精确触线。</p>
+      <el-alert v-if="objectsError" :title="objectsError" type="warning" :closable="false" />
     </el-card>
 
     <!-- 任务状态（提交/查询后展示） -->
@@ -145,6 +160,76 @@
           </div>
         </div>
 
+        <!-- 零交易原因分析（zone-reversal 且 0 笔成交时，基于回放快照 + 事件推断） -->
+        <el-alert v-if="zeroTradeDiags.length > 0" type="warning" :closable="false" show-icon style="margin-top: 16px;">
+          <template #title>该任务 0 笔交易，区间诊断：</template>
+          <ul style="margin: 6px 0 0 18px; padding: 0; line-height: 1.8;">
+            <li v-for="d in zeroTradeDiags" :key="d.zoneId">
+              <b>{{ d.zoneId }}</b> [{{ fmtNum(d.lower) }}, {{ fmtNum(d.upper) }}]：{{ d.diagnosis }}
+            </li>
+          </ul>
+          <el-button type="primary" size="small" style="margin-top: 8px;" @click="$router.push(`/replay/${task.id}`)">查看策略回放</el-button>
+        </el-alert>
+
+        <el-card v-if="task.params?.chartObjects" shadow="never" style="margin-top: 20px;" data-testid="chart-object-snapshot">
+          <template #header>本任务冻结的图表对象定义</template>
+          <p v-if="task.params.chartObjects.version === 3">按配置生效时间回测（含事后设定），不是历史已知性验证；已选停用图形仍按配置有效期参与。</p>
+          <p>对象 {{ task.params.chartObjects.selectedIds.join('、') }} · 共 {{ task.params.chartObjects.revisions.length }} 条修订</p>
+          <el-table :data="task.params.chartObjects.revisions" size="small" border>
+            <el-table-column prop="id" label="对象" />
+            <el-table-column prop="revision" label="修订" />
+            <el-table-column prop="lower" label="下沿" />
+            <el-table-column prop="upper" label="上沿" />
+            <el-table-column prop="endLower" label="终点下沿（通道）" />
+            <el-table-column prop="lifecycle" label="生命周期" />
+            <el-table-column label="记录时间"><template #default="{ row }">{{ new Date(row.recordedAt).toLocaleString() }}</template></el-table-column>
+          </el-table>
+        </el-card>
+
+        <!-- 区间配置快照（zone-reversal：清晰展示区间数组而非一整行 JSON） -->
+        <el-card v-if="task.params?.zones" shadow="never" style="margin-top: 20px;">
+          <template #header>
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <span>区间配置快照（{{ task.params.zones.length }} 个）</span>
+              <el-tag size="small" type="success" effect="plain">中部触发价</el-tag>
+              <el-tag size="small" type="primary" effect="plain">风险比例 {{ task.params.riskRate }}（0.01 = 1%）</el-tag>
+              <el-tag size="small" type="primary" effect="plain">止损缓冲 {{ task.params.stopBufferRatio }}×</el-tag>
+              <el-tag size="small" type="primary" effect="plain">盈亏比 {{ task.params.rewardRiskRatio }}:1</el-tag>
+              <el-tag size="small" type="info" effect="plain">重新武装 {{ task.params.rearmBufferRatio }}×</el-tag>
+              <el-tag size="small" type="info" effect="plain">连续止损 {{ task.params.maxConsecutiveStops }} 次禁用</el-tag>
+            </div>
+          </template>
+          <!-- 止盈截断说明（配置快照无法预知实际入场时间，实际截断见回放） -->
+          <el-alert title="止盈列均为原始盈亏比止盈；届时已生效的前方区间可能截断止盈，实际截断价与实际盈亏比以回测事件/策略回放为准" type="info" :closable="false" show-icon style="margin-bottom: 10px;" />
+          <el-table :data="task.params.zones" border stripe size="small" :show-overflow-tooltip="true">
+            <el-table-column prop="id" label="区间 ID" width="110" />
+            <el-table-column label="下边界" width="90" align="right">
+              <template #default="{ row }">{{ fmtNum(row.lower) }}</template>
+            </el-table-column>
+            <el-table-column label="上边界" width="90" align="right">
+              <template #default="{ row }">{{ fmtNum(row.upper) }}</template>
+            </el-table-column>
+            <el-table-column label="开多 @中点" width="110" align="right">
+              <template #default="{ row }">{{ snapLong(row) }}</template>
+            </el-table-column>
+            <el-table-column label="多头止损" width="100" align="right">
+              <template #default="{ row }">{{ snapLongStop(row) }}</template>
+            </el-table-column>
+            <el-table-column label="多头止盈(原始)" width="130" align="right">
+              <template #default="{ row }">{{ snapLongTp(row) }}</template>
+            </el-table-column>
+            <el-table-column label="开空 @中点" width="110" align="right">
+              <template #default="{ row }">{{ snapShort(row) }}</template>
+            </el-table-column>
+            <el-table-column label="空头止损" width="100" align="right">
+              <template #default="{ row }">{{ snapShortStop(row) }}</template>
+            </el-table-column>
+            <el-table-column label="空头止盈(原始)" width="130" align="right">
+              <template #default="{ row }">{{ snapShortTp(row) }}</template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
         <!-- 权益曲线 -->
         <el-card shadow="never" style="margin-top: 20px;">
           <template #header>权益曲线</template>
@@ -201,15 +286,18 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
-import { createAiReport, getStrategies, submitBacktest, getBacktest } from '../api/core'
+import { createAiReport, getStrategies, submitBacktest, getBacktest, getBacktestReplay, getChartObjects } from '../api/core'
 import { getSymbols } from '../api/data'
 import { INTERVALS, MARKET_OPTIONS, marketLabel, normalizeMarketSelection } from '../utils/marketOptions'
+import { diagnoseZones } from '../utils/zoneDiagnosis'
 import { colorTheme } from '../utils/colorTheme.js'
 import { applyWorkspaceChartStyle, workspaceChartStyle } from '../utils/workspaceChartStyle.js'
+import { workspaceSelections } from '../utils/workspaceSelections.js'
 import { ElMessage } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
+const previous = workspaceSelections.backtest
 
 // 表单
 const form = reactive({
@@ -220,14 +308,18 @@ const form = reactive({
   limit: 500,
   leverage: 10,
   initialCapital: 100000,
-  risk: { preset: 'STOP_RISK', allocation: 0.01, stopLossRatio: 0.02, rewardRiskRatio: 2, maxNotionalRatio: 1 }
+  risk: { preset: 'STOP_RISK', allocation: 0.01, stopLossRatio: 0.02, rewardRiskRatio: 2, maxNotionalRatio: 1 },
+  chartObjectIds: [],
+  ...previous?.form
 })
+form.risk = { ...form.risk }
+if (route.query.strategyId) form.strategyId = route.query.strategyId
 
 const strategies = ref([])
-const usesIndependentRisk = computed(() => ['ema20', 'turtle'].includes(form.strategyId))
-const maxPositionRiskRatio = ref(0.05)
-const emaAtr = reactive({ period: 20, multiplier: 2 })
-const emaRisk = reactive({ preset: 'STOP_RISK', allocation: 0.01, rewardRiskRatio: 2, minVolatilityRatio: 0.6 })
+const usesIndependentRisk = computed(() => ['ema20', 'zone-reversal', 'turtle'].includes(form.strategyId))
+const maxPositionRiskRatio = ref(previous?.maxPositionRiskRatio ?? 0.05)
+const emaAtr = reactive({ period: 20, multiplier: 2, ...previous?.emaAtr })
+const emaRisk = reactive({ preset: 'STOP_RISK', allocation: 0.01, rewardRiskRatio: 2, minVolatilityRatio: 0.6, ...previous?.emaRisk })
 const riskForm = computed(() => form.strategyId === 'ema20' ? emaRisk : form.risk)
 /** 切换方案采用对应的起始比例，其余保护参数保持当前表单设置。 */
 function resetAllocation() {
@@ -246,12 +338,106 @@ const taskRisk = computed(() => task.value.params?.execution?.risk)
 const taskStopLabel = computed(() => {
   const risk = taskRisk.value
   if (!risk) return ''
+  if (risk.version === 4) return '初始止损在区间外 2 倍宽度'
   if (risk.version === 3) {
     const filter = risk.minVolatilityRatio === 0 ? '关闭波动过滤' : `最低波动比 ${risk.minVolatilityRatio}`
     return `止损 ATR(${risk.atrPeriod}) × ${risk.atrMultiplier} · ${filter}`
   }
   return risk.version === 2 ? `止损 ATR(${risk.atrPeriod}) × ${risk.atrMultiplier}` : `止损比例 ${risk.stopLossRatio}`
 })
+
+const chartObjects = ref([])
+const objectsLoading = ref(false)
+const objectsError = ref('')
+let objectLoadVersion = 0
+let initialized = false
+let disposed = false
+
+/** 作用域变化清空选择；迟到的旧请求不能覆盖新作用域。 */
+async function loadChartObjects(restoreIds = []) {
+  const version = ++objectLoadVersion
+  chartObjects.value = []
+  form.chartObjectIds = []
+  objectsError.value = ''
+  objectsLoading.value = false
+  if (form.strategyId !== 'zone-reversal') return
+  objectsLoading.value = true
+  try {
+    const { data } = await getChartObjects({ marketType: form.marketType, symbol: form.symbol, interval: form.interval })
+    if (version === objectLoadVersion) {
+      chartObjects.value = data
+      form.chartObjectIds = restoreIds.filter(id => data.some(object => object.id === id))
+    }
+  } catch (error) {
+    if (version === objectLoadVersion) objectsError.value = '区域加载失败：' + (error.response?.data?.message || error.message)
+  } finally {
+    if (version === objectLoadVersion) objectsLoading.value = false
+  }
+}
+const objectScope = () => [form.strategyId, form.marketType, form.symbol, form.interval]
+watch(objectScope, () => { if (initialized) loadChartObjects() })
+
+// 零交易诊断（zone-reversal 且 0 笔成交时，拉回放快照推断每个区间的未交易原因）
+const zeroTradeDiags = ref([])
+
+// ==================== 旧任务配置快照预览（保持历史解释） ====================
+
+/** 数值安全转换：null/空串 → NaN */
+function num(v) {
+  if (v === null || v === undefined || v === '') return NaN
+  const n = Number(v)
+  return Number.isFinite(n) ? n : NaN
+}
+
+/** 格式化数字（NaN/Infinity → '-'） */
+function fmtNum(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n.toFixed(2) : '-'
+}
+
+/**
+ * 按旧中点策略规则计算某区间的入场/止损/原始止盈/武装线（前后端公式一致，见 docs/zone-reversal-strategy-plan.md §4.1/§4.2/§5.1）：
+ * <ul>
+ *   <li>中部触发价 entry=(lower+upper)/2（多空同一中点，ARMED 后触及中点才开仓），止损规则不变</li>
+ *   <li>止盈为原始 rewardRiskRatio 止盈（原始 2R）；实际截断价只在回测事件/策略回放中展示——
+ *       配置快照无法预知实际入场时间，因此不按"全部区间"做无条件截断</li>
+ *   <li>武装线：above=upper+width×rearmBufferRatio（上方武装）、below=lower-width×rearmBufferRatio（下方武装）</li>
+ * </ul>
+ */
+function computePreview(lower, upper, sbr, rrr, rbr) {
+  const width = upper - lower
+  const entry = (lower + upper) / 2
+  const longStop = lower - width * sbr
+  const longRisk = entry - longStop
+  const longRawTp = entry + longRisk * rrr
+  const shortStop = upper + width * sbr
+  const shortRisk = shortStop - entry
+  const shortRawTp = entry - shortRisk * rrr
+  return {
+    entry,
+    longStop, longRawTp,
+    shortStop, shortRawTp,
+    above: upper + width * rbr,
+    below: lower - width * rbr
+  }
+}
+
+/** 配置快照表格预览（复用参数公式，从 task.params 中取值；止盈为原始盈亏比） */
+function snapPreview(row) {
+  const sbr = num(task.value.params?.stopBufferRatio)
+  const rrr = num(task.value.params?.rewardRiskRatio)
+  const rbr = num(task.value.params?.rearmBufferRatio)
+  const lower = num(row.lower)
+  const upper = num(row.upper)
+  if (Number.isNaN(lower) || Number.isNaN(upper) || upper <= lower || Number.isNaN(sbr) || Number.isNaN(rrr) || Number.isNaN(rbr)) return null
+  return computePreview(lower, upper, sbr, rrr, rbr)
+}
+const snapLong = (row) => fmtNum(snapPreview(row)?.entry)
+const snapLongStop = (row) => fmtNum(snapPreview(row)?.longStop)
+const snapLongTp = (row) => fmtNum(snapPreview(row)?.longRawTp)
+const snapShort = (row) => fmtNum(snapPreview(row)?.entry)
+const snapShortStop = (row) => fmtNum(snapPreview(row)?.shortStop)
+const snapShortTp = (row) => fmtNum(snapPreview(row)?.shortRawTp)
 
 const chartRef = ref(null)
 let chart = null
@@ -261,6 +447,7 @@ onMounted(async () => {
   // 加载策略列表 + 交易对列表
   try {
     const [sRes, symRes] = await Promise.all([getStrategies(), getSymbols(form.marketType)])
+    if (disposed) return
     strategies.value = sRes.data
     symbols.value = symRes.data
     const normalized = normalizeMarketSelection(form.marketType, form.symbol, form.interval, symbols.value)
@@ -270,10 +457,11 @@ onMounted(async () => {
     ElMessage.error('加载数据失败: ' + e.message)
   }
 
-  // 从策略页跳转过来：预选策略
-  if (route.query.strategyId) {
-    form.strategyId = route.query.strategyId
-  }
+  await nextTick()
+  if (disposed) return
+  initialized = true
+  const sameScope = previous && objectScope().every((value, index) => value === previous.objectScope[index])
+  void loadChartObjects(sameScope ? previous.chartObjectIds : [])
 
   // 从历史页跳转过来：直接加载该任务结果
   if (route.query.id) {
@@ -282,21 +470,34 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  workspaceSelections.backtest = {
+    form: { ...form, risk: { ...form.risk }, chartObjectIds: [] },
+    objectScope: objectScope(), chartObjectIds: [...form.chartObjectIds],
+    maxPositionRiskRatio: maxPositionRiskRatio.value, emaAtr: { ...emaAtr }, emaRisk: { ...emaRisk }
+  }
+  disposed = true
+  objectLoadVersion++
   stopPolling()
   chart?.dispose()
 })
 
 async function loadSymbols() {
+  const marketType = form.marketType
   try {
-    const response = await getSymbols(form.marketType)
+    const response = await getSymbols(marketType)
+    if (disposed || marketType !== form.marketType) return
     symbols.value = response.data
     const normalized = normalizeMarketSelection(form.marketType, form.symbol, form.interval, symbols.value)
     form.symbol = normalized.symbol
     form.interval = normalized.interval
   } catch (e) {
-    ElMessage.error('加载交易对失败: ' + e.message)
+    if (!disposed && marketType === form.marketType) ElMessage.error('加载交易对失败: ' + e.message)
   }
 }
+
+watch(() => route.query.strategyId, strategyId => {
+  if (route.name === 'backtest' && strategyId) form.strategyId = strategyId
+})
 
 // 路由 query.id 变化时重新加载（同组件跳转）
 watch(() => route.query.id, (newId) => {
@@ -305,6 +506,7 @@ watch(() => route.query.id, (newId) => {
     chart?.dispose()
     chart = null
     task.value = { id: null, marketType: null, status: null, errorMsg: null, result: null, params: null, strategyId: null }
+    zeroTradeDiags.value = []
     startPolling(Number(newId))
   }
 })
@@ -315,22 +517,30 @@ async function submit() {
     ElMessage.warning('请选择策略')
     return
   }
+  if (form.strategyId === 'zone-reversal' && (objectsLoading.value || objectsError.value || form.chartObjectIds.length === 0)) {
+    ElMessage.warning('请先加载并选择共享区域或通道')
+    return
+  }
   submitting.value = true
   try {
     // 重置上次结果
     chart?.dispose()
     chart = null
     task.value = { id: null, marketType: null, status: null, errorMsg: null, result: null, params: null, strategyId: null }
+    zeroTradeDiags.value = []
 
     const params = {
       leverage: form.leverage,
       initialCapital: form.initialCapital
     }
 
+    const { preset, allocation, rewardRiskRatio, maxNotionalRatio } = form.risk
     const riskConfig = {
       ...(form.strategyId === 'ema20'
         ? { ...emaRisk, atrPeriod: emaAtr.period, atrMultiplier: emaAtr.multiplier }
-        : form.risk),
+        : form.strategyId === 'zone-reversal'
+          ? { preset, allocation, rewardRiskRatio, maxNotionalRatio }
+          : form.risk),
       ...(form.strategyId === 'turtle' ? { maxPositionRiskRatio: maxPositionRiskRatio.value } : {})
     }
     const res = await submitBacktest({
@@ -340,7 +550,8 @@ async function submit() {
       interval: form.interval,
       limit: form.limit,
       params,
-      ...(usesIndependentRisk.value ? { riskConfig } : {})
+      ...(usesIndependentRisk.value ? { riskConfig } : {}),
+      ...(form.strategyId === 'zone-reversal' ? { chartObjectIds: [...form.chartObjectIds] } : {})
     })
     ElMessage.success('回测任务已提交')
     startPolling(res.data.id)
@@ -382,6 +593,11 @@ async function fetchTask(id) {
       task.value.strategyId = data.strategyId
       await nextTick()
       renderEquityCurve(data.result.equityCurve)
+      // 零交易原因分析：zone-reversal 且 0 笔成交时，基于回放快照 + 事件推断
+      zeroTradeDiags.value = []
+      if (data.strategyId === 'zone-reversal' && !data.params?.execution && (!data.result.trades || data.result.trades.length === 0)) {
+        loadZeroTradeDiagnosis(Number(id))
+      }
     } else if (data.status === 'FAILED') {
       stopPolling()
     }
@@ -404,6 +620,20 @@ async function generateAiReview() {
     ElMessage.error('生成 AI 复盘失败: ' + (error.response?.data?.message || error.response?.data?.code || error.message))
   } finally {
     aiCreating.value = false
+  }
+}
+
+/** 加载零交易诊断：拉回放快照（bars + events），按区间推断未交易原因 */
+async function loadZeroTradeDiagnosis(id) {
+  try {
+    const res = await getBacktestReplay(id)
+    const d = res.data
+    const zones = d.params?.zones || []
+    if (!Array.isArray(zones) || zones.length === 0) return
+    zeroTradeDiags.value = diagnoseZones(zones, d.replay?.bars || [], d.replay?.events || [], d.params || {})
+  } catch (e) {
+    // 诊断失败不影响结果展示（回放接口 409/404 时静默）
+    zeroTradeDiags.value = []
   }
 }
 

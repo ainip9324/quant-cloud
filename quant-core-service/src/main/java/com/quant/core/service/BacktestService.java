@@ -1,5 +1,7 @@
 package com.quant.core.service;
 
+import com.quant.core.strategy.SignalStrategy;
+import com.quant.core.zone.BacktestChartObjects;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.quant.common.enums.TaskStatus;
@@ -51,6 +53,7 @@ public class BacktestService {
     private final BacktestTaskMapper taskMapper;
     private final BacktestMessageProducer messageProducer;
     private final StrategyRegistry strategyRegistry;
+    private final BacktestChartObjects chartObjects;
 
     /**
      * 提交回测任务
@@ -77,6 +80,14 @@ public class BacktestService {
         Strategy strategy = strategyRegistry.require(request.getStrategyId());
         Map<String, Object> params = SignalRunConfiguration.prepare(
                 request.getParams(), request.getRiskConfig(), strategy, selection.interval());
+        boolean usesObjects = request.getRiskConfig() != null
+                && strategy instanceof SignalStrategy signals && signals.requiresChartObjects();
+        if (usesObjects) {
+            long cutoff = SignalRunConfiguration.from(params, strategy).closedBefore();
+            params.put("chartObjects", chartObjects.freeze(selection, request.getChartObjectIds(), cutoff));
+        } else if (request.getChartObjectIds() != null) {
+            throw new IllegalArgumentException("只有新版区间反转任务可选择图表对象");
+        }
         strategy.validateParameters(params);
 
         // 构造任务实体
@@ -171,7 +182,7 @@ public class BacktestService {
      * 查询任务列表（按创建时间倒序，支持状态/策略筛选 + 分页）
      *
      * @param status     状态筛选（WAITING/RUNNING/SUCCESS/FAILED），null=全部
-     * @param strategyId 策略筛选（如 ema20），null=全部
+     * @param strategyId 策略筛选（如 zone-reversal），null=全部
      * @param page       页码（从 1 开始）
      * @param size       每页条数（1~100）
      * @return 分页结果 {total, list}
@@ -240,7 +251,7 @@ public class BacktestService {
         vo.setCreateTime(task.getCreateTime());
         vo.setUpdateTime(task.getUpdateTime());
 
-        // 配置快照：params JSON → Map（用于任务详情和复盘）
+        // 配置快照：params JSON → Map（详情页展示 zones 等策略专属参数）
         if (task.getParams() != null && !task.getParams().isBlank()) {
             try {
                 vo.setParams(JSON.parseObject(task.getParams()));

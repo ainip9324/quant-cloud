@@ -33,6 +33,15 @@ export function submitBacktest(data) {
   return api.post('/core/backtest', data)
 }
 
+/** 新任务可选未归档水平区域或通道；历史任务读取自身快照。 */
+export async function getChartObjects(scope) {
+  const results = await Promise.all(['ACTIVE', 'DISABLED'].map(lifecycle =>
+    api.get('/core/market-zones', { params: { ...scope, lifecycle, limit: 100 } })))
+  const objects = new Map(results.flatMap(result => result.data).map(zone => [zone.id, zone]))
+  return { data: [...objects.values()].filter(zone => zone.lifecycle !== 'ARCHIVED')
+    .sort((a, b) => a.id - b.id) }
+}
+
 /** 查询单个回测任务结果 */
 export function getBacktest(id) {
   return api.get(`/core/backtest/${id}`)

@@ -4,6 +4,7 @@ import com.quant.common.model.Account;
 import com.quant.common.enums.PositionSide;
 import com.quant.common.model.TradePlan;
 import com.quant.core.strategy.TradeSignal;
+import com.quant.core.zone.ChartObjectHistory;
 
 /** 回测风控模块，为开仓和加仓计算数量及资金需求。 */
 final class PositionRisk {
@@ -92,6 +93,24 @@ final class PositionRisk {
         if (!Double.isFinite(takeProfit) || takeProfit <= 0) {
             throw new IllegalArgumentException("风控参数生成的止盈价格无效");
         }
+        return openingPlan(shortSide, config, price, distance, stop, takeProfit);
+    }
+
+    /** R 是图形宽度；定仓仍使用实际开盘价与结构止损之间的距离。 */
+    static TradePlan planFromZone(TradeSignal signal, RiskConfiguration config, double price,
+                                  ChartObjectHistory.Revision zone, long openingTime) {
+        boolean shortSide = signal == TradeSignal.OPEN_SHORT;
+        double width = zone.upper() - zone.lower();
+        double stop = shortSide ? zone.upperAt(openingTime) + 2 * width : zone.lowerAt(openingTime) - 2 * width;
+        double distance = shortSide ? stop - price : price - stop;
+        double takeProfit = price + (shortSide ? -distance : distance) * config.rewardRiskRatio();
+        if (!Double.isFinite(stop) || stop <= 0 || !Double.isFinite(distance) || distance <= 0
+                || !Double.isFinite(takeProfit) || takeProfit <= 0 || takeProfit == price) return null;
+        return openingPlan(shortSide, config, price, distance, stop, takeProfit);
+    }
+
+    private static TradePlan openingPlan(boolean shortSide, RiskConfiguration config, double price,
+                                         double distance, double stop, double takeProfit) {
         TradePlan plan = shortSide ? TradePlan.openShort(config.allocation(), stop, takeProfit)
                 : TradePlan.openLong(config.allocation(), stop, takeProfit);
         if (config.preset() == RiskConfiguration.Preset.STOP_RISK) {

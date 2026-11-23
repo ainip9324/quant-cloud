@@ -2,8 +2,10 @@ package com.quant.core.dto;
 
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.quant.core.engine.RiskConfiguration;
+import com.quant.core.zone.StrictZoneLongDeserializer;
 import lombok.Data;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,4 +45,8 @@ public class BacktestRequest {
 
     /** 独立风控方案，服务端规范化后保存到任务执行快照。 */
     private RiskConfiguration riskConfig;
+
+    /** 所选共享对象标识，历史内容由服务端读取。 */
+    @JsonDeserialize(contentUsing = StrictZoneLongDeserializer.class)
+    private List<Long> chartObjectIds;
 }

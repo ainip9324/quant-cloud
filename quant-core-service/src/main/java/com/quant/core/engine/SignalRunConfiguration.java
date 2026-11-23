@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import com.quant.core.strategy.EmaStrategy;
 import com.quant.core.strategy.SignalStrategy;
 import com.quant.core.strategy.Strategy;
+import com.quant.core.strategy.ZoneReversalStrategy;
 import com.quant.core.util.IntervalUtils;
 import java.util.HashMap;
 import java.util.Map;
@@ -15,8 +16,8 @@ public record SignalRunConfiguration(int version, String strategyVersion, String
     /** 在 WAITING 入库前冻结新任务配置，禁止客户端通过 params 注入内部执行快照。 */
     public static Map<String, Object> prepare(Map<String, Object> params, RiskConfiguration requested,
                                               Strategy strategy, String interval) {
-        if (params != null && (params.containsKey("execution"))) {
-            throw new IllegalArgumentException("execution 由服务端生成");
+        if (params != null && (params.containsKey("execution") || params.containsKey("chartObjects"))) {
+            throw new IllegalArgumentException("execution 和 chartObjects 由服务端生成");
         }
         if (requested == null) return params;
         if (!(strategy instanceof SignalStrategy signals)) {
@@ -29,9 +30,11 @@ public record SignalRunConfiguration(int version, String strategyVersion, String
         }
         signals.normalizeSignalParameters(normalized);
         boolean ema = strategy instanceof EmaStrategy;
+        boolean objectStop = ZoneReversalStrategy.OBJECT_STOP_SIGNAL_VERSION.equals(signals.signalVersion());
         if (!ema && requested.usesAtr()) throw new IllegalArgumentException("当前策略不支持 ATR 风控版本");
+        if (!objectStop && requested.usesObjectStop()) throw new IllegalArgumentException("当前策略不支持区间宽度止损");
         normalized.put("execution", new SignalRunConfiguration(1, signals.signalVersion(), interval,
-                System.currentTimeMillis(), requested.forNewTask(ema)));
+                System.currentTimeMillis(), requested.forNewTask(ema, objectStop)));
         return normalized;
     }
 
@@ -45,7 +48,9 @@ public record SignalRunConfiguration(int version, String strategyVersion, String
             throw new IllegalArgumentException("信号执行快照无效", invalid);
         }
         if (config == null || config.version != 1 || config.risk == null || config.closedBefore <= 0
-                || config.risk.version() == null || (config.risk.version() != 1
+                || config.risk.version() == null
+                || (config.risk.usesObjectStop() != ZoneReversalStrategy.OBJECT_STOP_SIGNAL_VERSION.equals(config.strategyVersion))
+                || (config.risk.version() != 1 && !config.risk.usesObjectStop()
                     && !(config.risk.usesAtr() && strategy instanceof EmaStrategy
                          && config.risk.atrPeriod() != null && config.risk.atrMultiplier() != null))
                 || (config.risk.version() == 3 && config.risk.minVolatilityRatio() == null)

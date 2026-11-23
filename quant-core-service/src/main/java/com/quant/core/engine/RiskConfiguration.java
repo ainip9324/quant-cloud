@@ -25,7 +25,7 @@ public record RiskConfiguration(Integer version, Preset preset, Double allocatio
     public enum Preset { NOTIONAL_RATIO, STOP_RISK }
 
     /** 提交时默认按止损距离定仓；执行历史快照时仍要求已保存的定仓方式。 */
-    RiskConfiguration forNewTask(boolean ema) {
+    RiskConfiguration forNewTask(boolean ema, boolean objectStop) {
         Preset selected = preset == null ? Preset.STOP_RISK : preset;
         if (ema) {
             if ((version != null && !usesAtr()) || stopLossRatio != null) {
@@ -33,6 +33,13 @@ public record RiskConfiguration(Integer version, Preset preset, Double allocatio
             }
             // EMA 继续接受旧客户端的 v2 字段，名义上限仅由历史快照应用。
             return new RiskConfiguration(3, selected, allocation, null, rewardRiskRatio, null,
+                    maxPositionRiskRatio, atrPeriod, atrMultiplier, minVolatilityRatio).normalized();
+        }
+        if (objectStop) {
+            if (version != null && version != 1 && !usesObjectStop()) {
+                throw new IllegalArgumentException("区间反转需要区间宽度止损风控");
+            }
+            return new RiskConfiguration(4, selected, allocation, null, rewardRiskRatio, maxNotionalRatio,
                     maxPositionRiskRatio, atrPeriod, atrMultiplier, minVolatilityRatio).normalized();
         }
         return new RiskConfiguration(version, selected, allocation, stopLossRatio, rewardRiskRatio, maxNotionalRatio,
@@ -43,9 +50,15 @@ public record RiskConfiguration(Integer version, Preset preset, Double allocatio
         return Integer.valueOf(2).equals(version) || Integer.valueOf(3).equals(version);
     }
 
+    boolean usesObjectStop() {
+        return Integer.valueOf(4).equals(version);
+    }
+
     /** 补齐默认值并校验，提交与执行共用同一规则。 */
     public RiskConfiguration normalized() {
-        if (version != null && version != 1 && !usesAtr()) throw new IllegalArgumentException("不支持的风控版本");
+        if (version != null && version != 1 && !usesAtr() && !usesObjectStop()) {
+            throw new IllegalArgumentException("不支持的风控版本");
+        }
         if (preset == null) throw new IllegalArgumentException("请选择风控方案");
         double amount = allocation == null ? (preset == Preset.NOTIONAL_RATIO ? 0.1 : 0.01) : allocation;
         double reward = rewardRiskRatio == null ? 2 : rewardRiskRatio;
@@ -74,6 +87,10 @@ public record RiskConfiguration(Integer version, Preset preset, Double allocatio
             return new RiskConfiguration(version, preset, amount, null, reward, maximum, riskCap, period, multiplier, minimum);
         }
         if (atrPeriod != null || atrMultiplier != null) throw new IllegalArgumentException("当前风控不支持 ATR 止损参数");
+        if (usesObjectStop()) {
+            if (stopLossRatio != null) throw new IllegalArgumentException("区间宽度止损不能同时配置止损比例");
+            return new RiskConfiguration(4, preset, amount, null, reward, maximum, riskCap);
+        }
         double stop = stopLossRatio == null ? 0.02 : stopLossRatio;
         requireRange(stop, 0, 0.5, "止损比例");
         if (stop * reward >= 1) throw new IllegalArgumentException("止损比例乘盈亏比须小于 1，以保证多空保护价格有效");

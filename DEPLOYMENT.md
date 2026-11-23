@@ -40,13 +40,20 @@ SELECT username, role FROM users WHERE username = @admin_username;
 docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot quant_cloud' < docker/migrations/zone-web-alerts.sql
 ```
 
-在运行环境的 `.env` 设置 `ZONE_ALERTS_ENABLED=true`，并保持共享区域、实时观测和工作台开启。沿用当前 Compose 项目名、环境文件及覆盖文件，更新 Core、Gateway 和前端。
+在运行环境的 `.env` 设置 `ZONE_ALERTS_ENABLED=true`，并保持共享区域、实时观测和工作台开启。沿用当前 Compose 项目名、环境文件及覆盖文件，更新 Core、Gateway、前端和 AI 服务。区间反转、收盘确认和 AI 复盘沿用已有盘面图形与提醒表。已有这两套结构的库从网页提醒版升级时无需新增迁移。早于平行通道的卷先执行上面的盘面图形迁移。
 
 ```sh
-docker compose up -d --build --no-deps core-service gateway frontend
+docker compose up -d --build --no-deps core-service gateway frontend ai-service
 ```
 
-等待服务健康后，登录实时盘面，展开「区域提醒」订阅管理员启用的共享区间或通道。在「账号提醒设置」里开启提醒。在面板试听后，网页可在当前可见标签页为接近预警播放音效。用两个账号分别检查订阅及提醒记录，各账号应只看到自己的数据。关闭功能时，将 `ZONE_ALERTS_ENABLED` 设回 `false` 并重建 Core，已有订阅及记录可保留。
+等待服务健康后，登录实时盘面，展开「区域提醒」订阅管理员启用的共享区间或通道。在「账号提醒设置」里开启提醒。在面板试听后，网页可在当前可见标签页为接近预警和收盘形态确认播放音效。用两个账号分别检查订阅及提醒记录，各账号应只看到自己的数据。关闭功能时，将 `ZONE_ALERTS_ENABLED` 设回 `false` 并重建 Core，已有订阅及记录可保留。
+
+面板在当前账号成功读取 `GET /api/core/zone-alerts` 后显示。若面板没有出现，先确认目标部署已更新、Core 实际启动参数带有网页提醒开关，再检查浏览器 Network 中该请求及 Core 日志。登录后预期返回 200。404 时检查功能开关和镜像版本，401 时检查登录状态，服务端错误时检查三张提醒表与数据库连接。
+
+```sh
+docker compose ps core-service gateway frontend ai-service
+docker compose exec -T core-service sh -c 'tr "\000" "\n" </proc/1/cmdline | grep -Fx -- "--zone-alerts.enabled=true"'
+```
 
 网页提醒无需邮件。确需邮件时，沿用部署环境审核过的 SMTP 渠道，通过 `ZONE_ALERTS_MAIL_HOST`、`ZONE_ALERTS_MAIL_PORT`、`ZONE_ALERTS_MAIL_TLSMODE`（`STARTTLS` 或 `IMPLICIT_TLS`）、`ZONE_ALERTS_MAIL_FROM`、`ZONE_ALERTS_MAIL_USERNAME` 和 `ZONE_ALERTS_MAIL_PASSWORD` 配置。管理员可修改自己的收件地址。普通账号需要部署人员用 `zone-alerts.mail.recipients` 按 ID 预设收件地址。把凭据留在部署环境。
 

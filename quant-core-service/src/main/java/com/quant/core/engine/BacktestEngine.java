@@ -17,6 +17,7 @@ import com.quant.core.strategy.StrategyContext;
 import com.quant.core.strategy.SignalStrategy;
 import com.quant.core.strategy.TradeSignal;
 import com.quant.core.strategy.SignalDecision;
+import com.quant.core.zone.ChartObjectHistory;
 import com.quant.core.util.IntervalUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -108,6 +109,14 @@ public class BacktestEngine {
             long lastOpen = execution.closedBefore() - IntervalUtils.toMillis(execution.interval());
             klines = klines.stream().filter(bar -> bar.getTime() <= lastOpen).toList();
         }
+        ChartObjectHistory objects = execution != null && ((SignalStrategy) strategy).requiresChartObjects()
+                ? new ChartObjectHistory(ChartObjectHistory.snapshot(params)) : null;
+        if (objects != null) {
+            long period = IntervalUtils.toMillis(execution.interval());
+            if (klines == null || klines.stream().noneMatch(bar -> !objects.covering(bar.getTime(), bar.getTime() + period).isEmpty())) {
+                throw new IllegalArgumentException("CHART_OBJECT_HISTORY_UNAVAILABLE: 实际行情窗口内没有历史可见的完整图表对象");
+            }
+        }
         if (klines == null || klines.isEmpty()) {
             log.warn("K线数据为空，返回空结果");
             return emptyOutput();
@@ -144,7 +153,8 @@ public class BacktestEngine {
             }
 
             if (execution != null) {
-                boolean protectedExit = executeSignalBar(strategy, ctx, account, bar, pending, execution.risk(), pendingAtr, trades);
+                boolean protectedExit = executeSignalBar(strategy, ctx, account, bar, pending, execution.risk(),
+                        pendingAtr, objects, trades);
                 updateEquity(account, bar.getClose());
                 pending = protectedExit ? SignalDecision.of(TradeSignal.HOLD) : ((SignalStrategy) strategy).onSignal(ctx, bar);
                 boolean entry = pending.action() == TradeSignal.OPEN_LONG || pending.action() == TradeSignal.OPEN_SHORT;
@@ -251,7 +261,8 @@ public class BacktestEngine {
 
     /** 下一根开盘执行待处理信号，然后检查本根持仓保护。 */
     private boolean executeSignalBar(Strategy strategy, StrategyContext ctx, Account account, Kline bar,
-                                     SignalDecision signal, RiskConfiguration risk, double signalAtr, List<Trade> trades) {
+                                     SignalDecision signal, RiskConfiguration risk, double signalAtr,
+                                     ChartObjectHistory objects, List<Trade> trades) {
         Kline opening = new Kline();
         opening.setTime(bar.getTime());
         opening.setOpen(bar.getOpen()); opening.setHigh(bar.getOpen());
@@ -259,16 +270,38 @@ public class BacktestEngine {
         updateEquity(account, bar.getOpen());
         boolean closed = protectSignalPosition(strategy, ctx, account, opening, trades, true);
         if (!closed && signal.action() != TradeSignal.HOLD) {
-            TradePlan plan = PositionRisk.plan(signal.action(), risk, bar.getOpen(), account, signalAtr);
-            if (plan == null) {
-                recordRejected(ctx, bar, "INVALID_ATR_PROTECTION", signal.sourceId(),
-                        "ATR 未就绪或无法生成有效保护价", bar.getOpen());
-            } else {
+            TradePlan plan = risk.usesObjectStop() ? planZoneEntry(ctx, opening, signal, risk, objects)
+                    : PositionRisk.plan(signal.action(), risk, bar.getOpen(), account, signalAtr);
+            if (plan != null) {
                 plan.setSourceId(signal.sourceId());
                 executePlan(strategy, ctx, account, opening, plan, trades, risk);
+            } else if (!risk.usesObjectStop()) {
+                recordRejected(ctx, bar, "INVALID_ATR_PROTECTION", signal.sourceId(),
+                        "ATR 未就绪或无法生成有效保护价", bar.getOpen());
             }
         }
         return protectSignalPosition(strategy, ctx, account, bar, trades, false) || closed;
+    }
+
+    /** 仅按开盘时仍有效的信号来源修订取价，缺口过期时不外推通道。 */
+    private TradePlan planZoneEntry(StrategyContext ctx, Kline opening, SignalDecision signal,
+                                    RiskConfiguration risk, ChartObjectHistory objects) {
+        long time = opening.getTime();
+        var zone = objects.covering(time, time).stream()
+                .filter(revision -> Long.toString(revision.id()).equals(signal.sourceId())
+                        && java.util.Objects.equals(revision.revision(), signal.sourceRevision()))
+                .findFirst().orElse(null);
+        if (zone == null) {
+            recordRejected(ctx, opening, "ZONE_UNAVAILABLE_AT_OPEN", signal.sourceId(),
+                    "信号来源区间在开仓时已失效或不可用", opening.getOpen());
+            return null;
+        }
+        TradePlan plan = PositionRisk.planFromZone(signal.action(), risk, opening.getOpen(), zone, time);
+        if (plan == null) {
+            recordRejected(ctx, opening, "INVALID_ZONE_PROTECTION", signal.sourceId(),
+                    "开盘价已越过区间止损或无法生成有效保护价", opening.getOpen());
+        }
+        return plan;
     }
 
     /** 跳空保护按开盘价执行，日内同时触及保护价时沿用强平、止损、止盈优先级。 */
@@ -406,7 +439,7 @@ public class BacktestEngine {
     /**
      * 开仓（多空通用）：保证金扣款 + 三重校验（数量/余额/保证金充足），开仓后记录对应方向
      *
-     * <p>成交价约定（OHLC K线级撮合）：
+     * <p>成交价约定（OHLC K线级撮合，见 zone-reversal-strategy-plan.md §7）：
      * <ul>
      *   <li>entryPrice 为 null：按当前 K线收盘价成交（旧策略行为不变）</li>
      *   <li>entryPrice 非 null：仅当位于当前 K线 [low,high] 内时按该价成交；否则拒绝成交（跳空不假设计划成交价成交）</li>

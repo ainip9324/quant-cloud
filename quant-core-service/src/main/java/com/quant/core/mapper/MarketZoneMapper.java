@@ -13,6 +13,14 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface MarketZoneMapper {
+    /** 生效时间模式冻结当前定义，不把创建/修改时刻当作历史生效门槛。 */
+    @Select("<script>SELECT id," + FIELDS + " FROM market_zone WHERE market_type=#{marketType} "
+            + "AND symbol=#{symbol} AND analysis_interval=#{interval} AND lifecycle!='ARCHIVED' "
+            + "AND updated_at &lt;= #{cutoff} AND id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> ORDER BY id</script>")
+    List<MarketZoneRow> selectBacktestDefinitions(@Param("marketType") MarketType marketType,
+            @Param("symbol") String symbol, @Param("interval") String interval,
+            @Param("ids") List<Long> ids, @Param("cutoff") long cutoff);
     String FIELDS = "market_type,symbol,analysis_interval,lower_price,upper_price,effective_from,effective_until,end_lower_price,note,"
             + "lifecycle,revision,created_by,updated_by,created_at,updated_at";
 
@@ -62,4 +70,15 @@ public interface MarketZoneMapper {
     @Select("SELECT zone_id AS id," + FIELDS + " FROM market_zone_revision WHERE zone_id=#{id} AND revision=#{revision}")
     MarketZoneRow selectRevision(@Param("id") long id, @Param("revision") long revision);
 
+    /** 新任务排除当前已归档对象；已有任务直接读冻结快照，不走此查询。 */
+    @Select("<script>SELECT zone_id AS id," + FIELDS + " FROM market_zone_revision "
+            + "WHERE market_type=#{marketType} AND symbol=#{symbol} AND analysis_interval=#{interval} "
+            + "AND EXISTS (SELECT 1 FROM market_zone current_zone WHERE current_zone.id=market_zone_revision.zone_id "
+            + "AND current_zone.lifecycle!='ARCHIVED') "
+            + "AND updated_at &lt;= #{cutoff} AND zone_id IN "
+            + "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+            + "ORDER BY zone_id,updated_at,revision LIMIT 2001</script>")
+    List<MarketZoneRow> selectBacktestRevisions(@Param("marketType") MarketType marketType,
+            @Param("symbol") String symbol, @Param("interval") String interval,
+            @Param("ids") List<Long> ids, @Param("cutoff") long cutoff);
 }

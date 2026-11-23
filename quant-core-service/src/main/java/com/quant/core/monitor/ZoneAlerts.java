@@ -1,28 +1,46 @@
 package com.quant.core.monitor;
 
+import com.quant.common.market.LiveMarketSnapshot.Status;
+import com.quant.common.model.Kline;
+import com.quant.core.feign.DataFeignClient;
 import com.quant.core.mapper.MarketZoneMapper;
+import com.quant.core.strategy.ChartZoneSignals;
+import com.quant.core.strategy.TradeSignal;
+import com.quant.core.zone.ChartObjectHistory;
 import com.quant.core.zone.MarketZoneRow;
 import com.quant.core.zone.ZoneLifecycle;
 import java.time.Clock;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+@Slf4j
 @Service
 @ConditionalOnProperty(name = "zone-alerts.enabled", havingValue = "true")
 public class ZoneAlerts {
     private static final long MAX_ALERT_AGE = 120_000;
     private final JdbcTemplate db;
     private final MarketZoneMapper zones;
+    private final RedisLiveMarketSource live;
+    private final DataFeignClient history;
     private final MarketMonitorProperties monitor;
     private final ZoneAlertMail mail;
     private final Clock clock = Clock.systemUTC();
-    public ZoneAlerts(JdbcTemplate db, MarketZoneMapper zones,
+    // Only the confirmation worker accesses this watermark. The SQL unique key covers replica overlap.
+    private final Map<MonitorScope, Long> checked = new HashMap<>();
+
+    public ZoneAlerts(JdbcTemplate db, MarketZoneMapper zones, RedisLiveMarketSource live, DataFeignClient history,
                       MarketMonitorProperties monitor, ZoneAlertMail mail) {
         this.db = db;
         this.zones = zones;
+        this.live = live;
+        this.history = history;
         this.monitor = monitor;
         this.mail = mail;
     }
@@ -75,6 +93,57 @@ public class ZoneAlerts {
         } else if (previous == ObservationState.BELOW && current == ObservationState.APPROACHING_FROM_BELOW) {
             enqueue(zone, "APPROACH", "SHORT", marketTime);
         }
+    }
+
+    @Scheduled(fixedDelay = 3000, scheduler = "zoneAlertScheduler")
+    void confirmations() {
+        for (MonitorScope scope : monitor.scopes()) {
+            try { confirm(scope); }
+            catch (RuntimeException e) { log.warn("Zone alert confirmation unavailable for {}", scope.key()); }
+        }
+    }
+
+    private void confirm(MonitorScope scope) {
+        var fresh = live.read(scope).filter(snapshot -> snapshot.status() == Status.LIVE
+                && LiveSnapshotPolicy.valid(scope, snapshot, clock, monitor.getStaleMillis())).orElse(null);
+        if (fresh == null) return;
+        long target = fresh.lastClosedCandleTime(), period = scope.periodMillis(), close = target + period;
+        Long previousTarget = checked.putIfAbsent(scope, target);
+        if (previousTarget == null || previousTarget >= target || close > clock.millis()) return;
+        if (clock.millis() - close > MAX_ALERT_AGE) {
+            checked.put(scope, target);
+            return;
+        }
+        var ids = db.queryForList("""
+                SELECT DISTINCT s.zone_id FROM zone_alert_subscription s JOIN market_zone z ON z.id=s.zone_id
+                WHERE z.market_type=? AND z.symbol=? AND z.analysis_interval=? AND z.lifecycle='ACTIVE'
+                """, Long.class, scope.marketType().name(), scope.symbol(), scope.interval());
+        if (!ids.isEmpty()) {
+            List<Kline> bars = history.getKlines(scope.marketType(), scope.symbol(), scope.interval(), 3);
+            Kline bar = bars.stream().filter(k -> Objects.equals(k.getTime(), target)).findFirst().orElse(null);
+            if (bar == null || clock.millis() - close > MAX_ALERT_AGE) return;
+            Kline previous = bars.stream().filter(k -> Objects.equals(k.getTime(), target - period)).findFirst().orElse(null);
+            boolean needsPrevious = false;
+            for (long id : ids) {
+                var z = zones.selectById(id);
+                if (z == null || z.getLifecycle() != ZoneLifecycle.ACTIVE || z.getUpdatedAt() > target
+                        || z.getEffectiveUntil() != null && clock.millis() >= z.getEffectiveUntil()) continue;
+                if (z.getEndLowerPrice() == null && previous == null) {
+                    needsPrevious = true;
+                    continue;
+                }
+                var revision = new ChartObjectHistory.Revision(id, z.getRevision(), z.getLowerPrice().doubleValue(),
+                        z.getUpperPrice().doubleValue(), z.getEffectiveFrom(), z.getEffectiveUntil(), z.getUpdatedAt(),
+                        z.getLifecycle(), z.getEndLowerPrice() != null,
+                        z.getEndLowerPrice() == null ? null : z.getEndLowerPrice().doubleValue());
+                TradeSignal action = ChartZoneSignals.liveSignal(revision, previous, bar, period);
+                if (action == TradeSignal.OPEN_LONG || action == TradeSignal.OPEN_SHORT) {
+                    enqueue(z, "CONFIRMED", action == TradeSignal.OPEN_LONG ? "LONG" : "SHORT", close);
+                }
+            }
+            if (needsPrevious) return;
+        }
+        checked.put(scope, target);
     }
 
     private void enqueue(MarketZoneRow zone, String kind, String direction, long marketTime) {

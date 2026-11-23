@@ -56,7 +56,7 @@ let busy = false
 let disposed = false
 
 function describe(notice) {
-  return `${notice.symbol} ${notice.interval} #${notice.zoneId} · 接近预警 · ${notice.direction === 'LONG' ? '多头方向' : '空头方向'}`
+  return `${notice.symbol} ${notice.interval} #${notice.zoneId} · ${notice.kind === 'APPROACH' ? '接近预警' : '收盘形态确认'} · ${notice.direction === 'LONG' ? '多头方向' : '空头方向'}`
 }
 
 function playSound() {

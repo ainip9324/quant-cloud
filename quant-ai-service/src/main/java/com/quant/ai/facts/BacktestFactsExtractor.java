@@ -32,18 +32,35 @@ public class BacktestFactsExtractor {
         if (params == null) {
             return safe;
         }
-        for (String key : List.of("initialCapital", "leverage")) {
+        for (String key : List.of("initialCapital", "leverage", "riskRate", "rewardRiskRatio",
+                "stopBufferRatio", "rearmBufferRatio", "maxConsecutiveStops")) {
             Object value = params.get(key);
             if (value instanceof Number || value instanceof String || value instanceof Boolean) {
                 safe.put(key, value);
             }
+        }
+        if ("zone-reversal".equals(task.strategyId()) && params.get("zones") instanceof List<?> zones) {
+            List<Map<String, Object>> safeZones = new ArrayList<>();
+            for (Object item : zones) {
+                if (item instanceof Map<?, ?> raw) {
+                    Map<String, Object> zone = new LinkedHashMap<>();
+                    for (String key : List.of("id", "lower", "upper", "effectiveFrom")) {
+                        Object value = raw.get(key);
+                        if (value instanceof Number || value instanceof String) {
+                            zone.put(key, value);
+                        }
+                    }
+                    safeZones.add(zone);
+                }
+            }
+            safe.put("zones", safeZones);
         }
         return safe;
     }
 
     /**
      * create在调用模型前先执行的确定性归约：读取已完成回测结果和结构化事件，
-     * 计算表现、持仓配对与拒绝原因。缺少可靠依据时记录limitations，不补造事实。
+     * 计算表现、持仓配对、拒绝原因及区域摘要。缺少可靠依据时记录limitations，不补造事实。
      * 后续Prompt和EvidenceVerifier共用这份结果，模型不负责重算收益或解释自由文本事件。
      */
     public BacktestFacts extract(BacktestTaskDto task, ReplayResponseDto replayResponse) {
@@ -62,11 +79,15 @@ public class BacktestFactsExtractor {
             limitations.add("completedPositionCount omitted because no deterministic entry/exit pairing exists");
         }
 
-        // 拒绝原因同样依据事件code/details/sequence，不依据模型对message文案的解读。
+        // 拒绝与区域状态同样依据事件code/details/sequence，不依据模型对message文案的解读。
         Map<String, Integer> rejections = rejectionCounts(events);
         List<Map<String, Object>> notable = notableSequences(events);
-        if (isExplicitZeroFill(result) && !rejections.isEmpty()) {
-            limitations.add("no fills; entry plans were rejected");
+        List<Map<String, Object>> zones = "zone-reversal".equals(task.strategyId())
+                ? reduceZones(task, replayResponse.replay(), events, limitations)
+                : List.of();
+
+        if (isExplicitZeroFill(result)) {
+            explainZeroFill(zones, rejections, limitations);
         }
 
         Map<String, Object> rejectionSummary = new LinkedHashMap<>();
@@ -76,7 +97,7 @@ public class BacktestFactsExtractor {
         return new BacktestFacts(
                 overview,
                 performance,
-                List.of(),
+                zones,
                 positions.completedPositions(),
                 rejectionSummary,
                 notable,
@@ -168,6 +189,57 @@ public class BacktestFactsExtractor {
         return new PositionResult(completed);
     }
 
+    /** 从区域配置和回放事件计算各区域在回放结束时的状态。 */
+    private List<Map<String, Object>> reduceZones(BacktestTaskDto task, BacktestReplayDto replay,
+                                                   List<StrategyEventDto> events, List<String> limitations) {
+        Map<String, ZoneState> zones = configuredZones(task.params(), limitations);
+        if (zones.isEmpty()) {
+            limitations.add("zone configuration is unavailable");
+            return List.of();
+        }
+        Long lastBarTime = replay.bars().isEmpty() ? null : replay.bars().get(replay.bars().size() - 1).time();
+        for (ZoneState zone : zones.values()) {
+            if (zone.effectiveFrom != null && (lastBarTime == null || zone.effectiveFrom > lastBarTime)) {
+                zone.state = "NOT_EFFECTIVE";
+            }
+        }
+        for (StrategyEventDto event : events) {
+            ZoneState zone = zones.get(event.sourceId());
+            if (zone != null) {
+                zone.reduce(event);
+            }
+        }
+        List<Map<String, Object>> summaries = new ArrayList<>();
+        for (ZoneState zone : zones.values()) {
+            summaries.add(zone.toMap());
+        }
+        return summaries;
+    }
+
+    /** 从任务参数初始化区域状态，跳过无效、缺失或重复 ID 并记录原因。 */
+    @SuppressWarnings("unchecked")
+    private Map<String, ZoneState> configuredZones(Map<String, Object> params, List<String> limitations) {
+        Map<String, ZoneState> zones = new LinkedHashMap<>();
+        if (params == null || !(params.get("zones") instanceof List<?> values)) {
+            return zones;
+        }
+        for (Object value : values) {
+            if (!(value instanceof Map<?, ?> raw)) {
+                limitations.add("zone configuration contains an invalid item");
+                continue;
+            }
+            Object idValue = raw.get("id");
+            String id = idValue instanceof String text ? text : null;
+            if (id == null || id.isBlank() || zones.containsKey(id)) {
+                limitations.add("zone configuration contains a missing or duplicate id");
+                continue;
+            }
+            Long effectiveFrom = numberAsLong(raw.get("effectiveFrom"));
+            zones.put(id, new ZoneState(id, effectiveFrom));
+        }
+        return zones;
+    }
+
     /** 过滤无效或重复的事件序号，记录异常后按有效序号排序。 */
     private List<StrategyEventDto> validatedEvents(BacktestReplayDto replay, List<String> limitations) {
         if (replay == null || replay.events() == null) {
@@ -193,7 +265,9 @@ public class BacktestFactsExtractor {
     private Map<String, Integer> rejectionCounts(List<StrategyEventDto> events) {
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (StrategyEventDto event : events) {
-            if ("ENTRY_REJECTED".equals(event.code())) {
+            if ("ENTRY_REJECTED_RR".equals(event.code())) {
+                counts.merge("ENTRY_REJECTED_RR", 1, Integer::sum);
+            } else if ("ENTRY_REJECTED".equals(event.code())) {
                 String reason = event.details() == null ? null : string(event.details().get("reasonCode"));
                 counts.merge(reason == null || reason.isBlank() ? "ENTRY_REJECTED" : reason, 1, Integer::sum);
             }
@@ -201,12 +275,13 @@ public class BacktestFactsExtractor {
         return counts;
     }
 
-    /** 挑出入场拒绝等可供复盘引用的事件。 */
+    /** 挑出止盈截断、禁用区域和入场拒绝等可供复盘引用的事件。 */
     private List<Map<String, Object>> notableSequences(List<StrategyEventDto> events) {
         List<Map<String, Object>> notable = new ArrayList<>();
         for (StrategyEventDto event : events) {
-            if (Set.of("ENTRY_REJECTED", "ENTRY_REJECTED_RR", "ENTRY_FILTERED_VOLATILITY",
-                    "EMA_RETEST_CANDIDATE", "EMA_EXIT_UNLOCKED", "EMA_EXIT_BLOCKED").contains(event.code())) {
+            if (Set.of("TAKE_PROFIT_TRUNCATED", "ZONE_DISABLED", "ENTRY_REJECTED", "ENTRY_REJECTED_RR",
+                    "ENTRY_FILTERED_VOLATILITY", "EMA_RETEST_CANDIDATE", "EMA_EXIT_UNLOCKED", "EMA_EXIT_BLOCKED")
+                    .contains(event.code())) {
                 Map<String, Object> row = new LinkedHashMap<>();
                 row.put("sequence", event.sequence());
                 row.put("time", event.time());
@@ -217,6 +292,25 @@ public class BacktestFactsExtractor {
             }
         }
         return notable;
+    }
+
+    /** 根据已记录的拒绝事件与区域终态补充零成交的解释。 */
+    private void explainZeroFill(List<Map<String, Object>> zones, Map<String, Integer> rejections,
+                                 List<String> limitations) {
+        if (!rejections.isEmpty()) {
+            limitations.add("no fills; entry plans were rejected or did not satisfy RR");
+            return;
+        }
+        for (Map<String, Object> zone : zones) {
+            String state = (String) zone.get("finalState");
+            if ("NOT_EFFECTIVE".equals(state)) {
+                limitations.add("no fills; one or more zones were not effective in the replay range");
+            } else if ("ARMED_ABOVE".equals(state) || "ARMED_BELOW".equals(state)) {
+                limitations.add("no fills; one or more zones remained armed without a later midpoint touch");
+            } else if ("DISARMED".equals(state)) {
+                limitations.add("no fills; effective zones never reached a recorded armed state");
+            }
+        }
     }
 
     /** 仅在成交列表存在且为空时认定为零成交。 */
@@ -235,6 +329,10 @@ public class BacktestFactsExtractor {
         } else {
             target.put(name, value);
         }
+    }
+
+    private Long numberAsLong(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
     }
 
     private String string(Object value) {
@@ -280,6 +378,60 @@ public class BacktestFactsExtractor {
                 limitations.add(eventKind + " event sequence " + sequence
                         + " has sourceId " + eventSourceId + " but the position was opened by " + sourceId);
             }
+        }
+    }
+
+    private static final class ZoneState {
+        private final String id;
+        private final Long effectiveFrom;
+        private String state = "DISARMED";
+        private int stopCount;
+        private Long lastSequence;
+
+        private ZoneState(String id, Long effectiveFrom) {
+            this.id = id;
+            this.effectiveFrom = effectiveFrom;
+        }
+
+        /** 按单条事件推进区域状态，更新最近序号和止损计数。 */
+        void reduce(StrategyEventDto event) {
+            if ("DISABLED".equals(state) || "NOT_EFFECTIVE".equals(state)) {
+                return;
+            }
+            lastSequence = event.sequence();
+            switch (event.code()) {
+                case "ZONE_EFFECTIVE", "STOPPED", "TAKE_PROFIT", "CLOSED", "LIQUIDATED" -> state = "DISARMED";
+                case "ARMED_ABOVE", "ARMED_BELOW" -> state = event.code();
+                case "ENTRY_EXECUTED" -> state = "IN_POSITION";
+                case "ZONE_DISABLED" -> state = "DISABLED";
+                case "STOP_COUNT_CHANGED" -> stopCount = detailStopCount(event, stopCount);
+                default -> {
+                }
+            }
+            if ("STOPPED".equals(event.code()) || "LIQUIDATED".equals(event.code())) {
+                stopCount = detailStopCount(event, stopCount + 1);
+            } else if ("TAKE_PROFIT".equals(event.code())) {
+                stopCount = 0;
+            }
+        }
+
+        /** 优先采用事件携带的止损计数，缺失时使用调用方给出的计数。 */
+        private int detailStopCount(StrategyEventDto event, int fallback) {
+            if (event.details() == null || !(event.details().get("stopCount") instanceof Number value)) {
+                return fallback;
+            }
+            return value.intValue();
+        }
+
+        /** 导出区域终态、止损次数和可定位的最后事件序号。 */
+        Map<String, Object> toMap() {
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("sourceId", id);
+            summary.put("finalState", state);
+            summary.put("stopCount", stopCount);
+            summary.put("lastSequence", lastSequence);
+            summary.put("effectiveFrom", effectiveFrom);
+            return summary;
         }
     }
 }
