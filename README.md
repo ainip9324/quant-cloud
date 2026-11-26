@@ -1,6 +1,6 @@
 # QuantCloud
 
-QuantCloud 是一个量化研究工作台，提供 Spot 与 USDT Futures 行情、策略回测、回放和 AI 辅助研究。回测使用模拟成交。
+QuantCloud 是一个虚拟货币策略回测工作台，提供 Spot 与 USDT Futures 行情、策略回测、回放和 AI 辅助研究。回测使用模拟成交。
 
 ## 主要功能
 
